@@ -1,0 +1,147 @@
+# =============================================================================
+# Local development stack: Postgres + Dagster (webserver + daemon).
+#
+# Bring up the whole platform with `docker compose up -d`. The data
+# Postgres lives in the same instance as Dagster's run-event store; they
+# are isolated by SCHEMA, not by database, which keeps the operational
+# surface (one healthcheck, one backup target) simple. Dagster's run
+# store + event log live in the `dagster_meta` schema; the platform's
+# data lives in the standard `ref / raw / derived / governance` schemas.
+#
+# Why one Postgres instance for both:
+#   * Single backup target (pg_dump rolls everything).
+#   * No cross-process state coordination needed.
+#   * For our workload (single operator, dozens of GB max), the storage
+#     contention concern is theoretical.
+# When to split: when Dagster's run-event volume (typically 10-100 MB
+# per day at our scale) competes with data writes for the same I/O
+# budget, OR when Dagster's table churn complicates pg_dump strategies.
+#
+# Why Dagster (over Prefect / Airflow):
+#   * Software-defined assets model is a near-perfect fit for our
+#     "raw.* table is a first-class entity" architecture.
+#   * Asset graph UI doubles as the BBG-terminal "what is fresh, what
+#     is stale, what failed" pane.
+#   * Postgres-backed event store integrates with our existing DB.
+#
+# Persistence: named volumes for Postgres data and Dagster artifact
+# storage. Restarting containers does not lose state; `docker compose
+# down -v` does.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Postgres -- platform data + Dagster metadata, one instance.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16
+    container_name: nj_postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ci}
+      POSTGRES_DB: nj
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d nj"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Dagster webserver -- the asset-graph UI + GraphQL API.
+  # Equivalent of the BBG ECO/DES/VIN screen pane: shows what is fresh,
+  # what is stale, what materializations are pending, what alerts fired.
+  # ---------------------------------------------------------------------------
+  dagster_webserver:
+    image: python:3.13-slim
+    container_name: nj_dagster_web
+    depends_on:
+      postgres:
+        condition: service_healthy
+    working_dir: /workspace
+    volumes:
+      - .:/workspace:cached
+      - dagster_home:/dagster_home
+    environment:
+      DAGSTER_HOME: /dagster_home
+      DAGSTER_PG_HOSTNAME: postgres
+      DAGSTER_PG_DB: nj
+      DAGSTER_PG_USERNAME: postgres
+      DAGSTER_PG_PASSWORD: ${POSTGRES_PASSWORD:-ci}
+      PG_DSN: postgresql://postgres:${POSTGRES_PASSWORD:-ci}@postgres:5432/nj
+      BLS_API_KEY: ${BLS_API_KEY:-}
+      CENSUS_API_KEY: ${CENSUS_API_KEY:-}
+      FRED_API_KEY: ${FRED_API_KEY:-}
+    ports:
+      - "3000:3000"
+    command: >
+      bash -c "
+        pip install --quiet -e '.[dev,orchestration]' &&
+        dagster-webserver -h 0.0.0.0 -p 3000 -m orchestration.definitions
+      "
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Dagster daemon -- runs schedules + sensors. Without this, scheduled
+  # materializations never fire (the webserver alone does not advance
+  # time).
+  # ---------------------------------------------------------------------------
+  dagster_daemon:
+    image: python:3.13-slim
+    container_name: nj_dagster_daemon
+    depends_on:
+      postgres:
+        condition: service_healthy
+    working_dir: /workspace
+    volumes:
+      - .:/workspace:cached
+      - dagster_home:/dagster_home
+    environment:
+      DAGSTER_HOME: /dagster_home
+      DAGSTER_PG_HOSTNAME: postgres
+      DAGSTER_PG_DB: nj
+      DAGSTER_PG_USERNAME: postgres
+      DAGSTER_PG_PASSWORD: ${POSTGRES_PASSWORD:-ci}
+      PG_DSN: postgresql://postgres:${POSTGRES_PASSWORD:-ci}@postgres:5432/nj
+      BLS_API_KEY: ${BLS_API_KEY:-}
+      CENSUS_API_KEY: ${CENSUS_API_KEY:-}
+      FRED_API_KEY: ${FRED_API_KEY:-}
+    command: >
+      bash -c "
+        pip install --quiet -e '.[dev,orchestration]' &&
+        dagster-daemon run -m orchestration.definitions
+      "
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Read API (BBG-terminal-style consumer surface).
+  # ---------------------------------------------------------------------------
+  api:
+    image: python:3.13-slim
+    container_name: nj_api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    working_dir: /workspace
+    volumes:
+      - .:/workspace:cached
+    environment:
+      PG_DSN: postgresql://postgres:${POSTGRES_PASSWORD:-ci}@postgres:5432/nj
+    ports:
+      - "8000:8000"
+    command: >
+      bash -c "
+        pip install --quiet -e '.[serving]' &&
+        nj-serve --host 0.0.0.0 --port 8000 --log-level info
+      "
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    name: nj_postgres_data
+  dagster_home:
+    name: nj_dagster_home

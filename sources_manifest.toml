@@ -1,0 +1,92 @@
+# ============================================================================
+# sources_manifest.toml
+#
+# Single source of truth for every external data source the platform
+# depends on. Every ingester in `ingestion/` MUST cite an entry from this
+# file in its module docstring; downstream provenance columns
+# (`source_url`, `source_sha256`) MUST trace back to a [<table>] entry
+# here.
+#
+# Schema per entry:
+#   url             Authoritative landing-page URL (NOT a deep link to a
+#                   single file -- those rotate). Operator follows from
+#                   here to download manually.
+#   download_dir    Where the operator stages downloaded files
+#                   (relative to repo root). All loaders read from here.
+#   license         Public-domain / CC0 / proprietary etc. We attribute
+#                   in any derived publication.
+#   citation        Format string used in publication footers.
+#   vintage_pattern Filename glob the loader uses to enumerate vintages.
+#   loaded_into     Postgres `schema.table` the loader writes to.
+#   loader_module   The Python module that implements the loader.
+#   notes           Optional caveat surface for the methodology page.
+# ============================================================================
+
+[meta]
+schema_version = "1"
+last_reviewed   = "2026-04-28"
+
+# ----------------------------------------------------------------------------
+# Tier 0: geographic + crosswalk substrate
+# ----------------------------------------------------------------------------
+
+[hud_zip_county]
+url             = "https://www.huduser.gov/portal/datasets/usps_crosswalk.html"
+download_dir    = "data/manual/hud_zip_county"
+license         = "Public domain (HUD)"
+citation        = "U.S. Department of Housing and Urban Development, USPS ZIP Code Crosswalk Files, {vintage}."
+vintage_pattern = "ZIP_COUNTY_<MMYYYY>.xlsx"
+loaded_into     = "ref.zip_county"
+loader_module   = "ingestion.hud_zip_county"
+notes = """
+Use bus_ratio for any worksite/business-address allocation; res_ratio for
+household-keyed data. The four ratios each sum to 1.0 across counties for
+a given (zip, vintage) -- migration 010 enforces this with a DEFERRABLE
+CONSTRAINT TRIGGER. The loader pre-validates the same invariant in
+Python so a malformed file fails before any Postgres round-trip.
+
+ref.zip_county.county_fips is a plain CHAR(5) (NOT FK'd to ref.county)
+so we can load the full national crosswalk; downstream consumers should
+JOIN through ref.v_zip_known_counties to filter to NJ.
+"""
+
+# ----------------------------------------------------------------------------
+# Tier 2 derived layer
+# ----------------------------------------------------------------------------
+
+[lca_wage_aggregate]
+loaded_into     = "derived.lca_wage_by_county_yr_visa"
+loader_module   = "derived.lca_aggregator"
+formula_version = "1.0.0-baseline"
+notes = """
+NOT a data source -- a derived aggregator. Reads raw.lca_disclosure
+(filtered to case_status='CERTIFIED') JOIN ref.v_zip_known_counties on
+the latest HUD vintage with vintage_year <= LCA fiscal_year, allocates
+each LCA observation by bus_ratio across counties, and writes weighted
+percentiles per (county_id, fiscal_year, visa_class) to derived.
+
+Suppression: cells with fewer than 10 unweighted certs publish NULL
+percentiles (the destination CHECK constraint enforces this; the
+aggregator honors it preemptively).
+"""
+
+# ----------------------------------------------------------------------------
+# Tier 3.5: population segmentation
+# ----------------------------------------------------------------------------
+
+[dol_oflc_lca]
+url             = "https://www.dol.gov/agencies/eta/foreign-labor/performance"
+download_dir    = "data/manual/dol_oflc_lca"
+license         = "Public domain (U.S. Department of Labor)"
+citation        = "U.S. Department of Labor, Office of Foreign Labor Certification, LCA Disclosure Data, {vintage}."
+vintage_pattern = "LCA_Disclosure_Data_FY{YYYY}_Q{Q}.csv"
+loaded_into     = "raw.lca_disclosure"
+loader_module   = "ingestion.dol_oflc_lca"
+notes = """
+Filename conventions vary by vintage; see the `_FILENAME_FY_RE` regex in
+the loader for the patterns that work. Operators must download files
+manually because the DOL's URLs include CSRF tokens that break direct
+fetch. The loader is robust to the five known schema vintages
+(v1_2008 / v2_2014 / v3_2018 / v4_2020 / v5_2023); add a new
+SchemaSignature in the loader if a sixth ships.
+"""

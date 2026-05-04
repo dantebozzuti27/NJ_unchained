@@ -1,0 +1,295 @@
+🧭 PROJECT: New Jersey Affordability Erosion Platform
+Goal
+
+Build a high-confidence, time-series affordability system for New Jersey counties that measures:
+
+Housing burden over time
+True tax-adjusted disposable income
+Required income to afford median housing
+“Affordability erosion” (how far middle-class purchasing power has degraded)
+
+The priority is accuracy over coverage. No speculative shortcuts.
+
+1. Core Design Philosophy (non-negotiable)
+1.1 Data quality > feature breadth
+Prefer fewer geographies with clean, consistent time series
+Avoid ZIP-level noise early (start at county level)
+1.2 Temporal consistency matters more than granularity
+A stable 1990–2026 series is more valuable than high-resolution but broken data
+1.3 Every metric must be reproducible
+Every value should be derivable from stored raw inputs + deterministic transforms
+2. Geographic Scope (Phase 1 only)
+
+Start with:
+
+New Jersey counties (21 total)
+Focus first on:
+Somerset
+Middlesex
+Bergen
+Hudson
+Essex
+Union
+Morris
+
+Then expand statewide.
+
+3. Data Sources (strict selection rules)
+3.1 Income (must be stable + comparable over time)
+
+Primary:
+
+U.S. Census ACS 5-year estimates
+Decennial Census (anchor points pre-2005)
+
+Rules:
+
+Never mix single-year ACS with 5-year without labeling
+Always store margin of error where available
+3.2 Housing (must be index-based, not raw listings)
+
+Preferred:
+
+Zillow Home Value Index (ZHVI) Zillow
+Redfin county-level price series Redfin
+
+Rules:
+
+Do NOT use scraped listings (too noisy)
+Always normalize to annual median index
+3.3 Taxes (most important and most error-prone layer)
+
+Federal:
+
+IRS brackets per year Internal Revenue Service
+
+State (NJ-specific):
+
+New Jersey Division of Taxation tables
+
+Property tax:
+
+NJ Department of Community Affairs (county averages)
+MUST be modeled separately per county
+
+Rules:
+
+Effective tax rate must be simulated, not assumed flat
+Store full tax function per year (not just %)
+3.4 Inflation adjustment (required for time comparability)
+CPI-U (BLS)
+
+All values must be converted to:
+
+2026 real dollars baseline
+
+4. Data Model (Postgres + PostGIS recommended)
+4.1 Core tables
+geo_county
+county_id
+name
+state = NJ
+geometry (optional later)
+income_yearly
+county_id
+year
+median_household_income
+income_p25
+income_p75 (if available)
+moe
+housing_yearly
+county_id
+year
+median_home_price_index
+median_rent_estimate (optional v1.1)
+source
+tax_parameters
+year
+federal_bracket_set_id
+nj_state_tax_rate_function
+county_property_tax_rate
+derived_metrics
+county_id
+year
+burden_ratio
+disposable_income_real
+required_income_30pct_rule
+affordability_gap_index
+5. Core Metrics (precisely defined)
+5.1 Housing Burden Ratio (HBR)
+HBR=
+Median Household Income
+Annual Housing Cost
+	​
+
+
+Housing cost definition (strict v1):
+
+Mortgage-equivalent payment
+Assume:
+20% down
+30-year fixed
+annual interest rate = historical series (Freddie Mac)
+5.2 Effective Tax Rate (ETR)
+ETR=
+Income
+Federal+State+PropertyTaxes
+	​
+
+
+Rules:
+
+Must be simulated per income band (not flat median)
+Property tax is county-specific and dominant in NJ
+5.3 True Disposable Income
+DI=Income−Taxes−Housing
+
+Then normalize:
+
+CPI-adjusted to 2026 dollars
+5.4 Affordability Threshold Gap
+Gap=Income
+required@30%
+	​
+
+−MedianIncome
+
+Where:
+
+Income
+required@30%
+	​
+
+=
+0.30
+Housing+Taxes
+	​
+
+
+This is your headline collapse metric.
+
+5.5 Affordability Erosion Index (AEI)
+
+Optional but powerful composite:
+
+AEI=
+HBR
+1990
+	​
+
+HBR
+2026
+	​
+
+	​
+
+
+Interpreted as:
+
+“How many times harder it is to afford housing today vs baseline year”
+
+6. Pipeline Architecture
+Step 1: Raw ingestion layer
+Pull ACS income data
+Pull ZHVI / Redfin indices
+Pull IRS + NJ tax tables
+
+Store raw untouched tables.
+
+Step 2: Normalization layer
+Align all datasets by:
+county_id
+year
+Convert all dollars → 2026 CPI-adjusted
+Step 3: Simulation layer
+Compute:
+taxes by income band
+mortgage payments per year
+property tax effects
+
+This is where most systems fail—keep deterministic and versioned.
+
+Step 4: Derived metrics layer
+compute burden ratios
+compute disposable income
+compute required income
+Step 5: Serving layer
+API endpoints:
+/county/{id}/trend
+/state/nj/map
+/compare?countyA=&countyB=
+7. Visualization requirements (v1)
+Must-have views
+7.1 Time series chart (core insight)
+Burden ratio (1990–2026)
+Required income vs actual income
+7.2 NJ county map
+Color = affordability gap index
+7.3 “Collapse curve”
+
+Single chart per county:
+
+Income line
+Required income line
+Divergence area shaded
+
+This is your “viral insight chart”
+
+8. Data validation rules (critical)
+
+You must enforce:
+
+8.1 Cross-source validation
+Census income vs BLS wage consistency check
+8.2 Outlier detection
+Year-over-year jumps >15% flagged
+8.3 Missing data handling
+Never interpolate blindly
+Mark gaps explicitly
+8.4 Versioning
+Every metric computation should be reproducible by:
+dataset version
+formula version
+9. MVP Build Plan (4 phases)
+Phase 1 (Week 1–2)
+NJ counties only
+Income + housing ingestion
+Basic burden ratio
+Phase 2 (Week 2–3)
+Tax simulation layer
+Disposable income metric
+Phase 3 (Week 3–4)
+Required income + gap index
+Time-series API
+Phase 4 (Week 4–5)
+Map visualization
+County comparisons
+“collapse curve” charts
+10. Key design warning (important)
+
+Do NOT fall into this trap:
+
+“Good enough tax assumptions + scraped housing data”
+
+That will destroy credibility.
+
+Your differentiator is:
+
+deterministic tax modeling
+clean census alignment
+time-consistent housing indices
+
+If those are wrong, the entire narrative collapses.
+
+11. What this becomes if done correctly
+
+Not a dashboard.
+
+It becomes:
+
+A longitudinal “middle-class viability index” for New Jersey counties.
+
+Which can later scale to:
+US-wide comparisons
+relocation decision tools
+policy analysis layer

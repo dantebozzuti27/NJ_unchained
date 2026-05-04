@@ -1,0 +1,44 @@
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Virtualenv -------------------------------------------------------------
+.venv/
+.python-version
+
+# --- Tooling caches ---------------------------------------------------------
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+
+# --- Editor / OS ------------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# --- Data -------------------------------------------------------------------
+# All raw downloads + staging are local-only artifacts. The pipeline must be
+# reproducible from `sources_manifest.toml` + the migrations + the ingesters.
+data/manual/
+data/raw/
+data/staging/
+!data/staging/recompute/
+!data/staging/recompute/.gitkeep
+
+# Allow recompute manifests (small JSON describing what changed) to be tracked
+# only if the user wants. Default: ignore.
+data/staging/recompute/*.json
+
+# --- Secrets ----------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key

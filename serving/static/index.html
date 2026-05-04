@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NJ Housing Burden Terminal</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <!--
+    Plotly.js for interactive charts (zoom, pan, hover, error bars).
+    Loaded from CDN to keep the front-end build-free; ~3 MB but
+    cached aggressively. SRI is omitted because Plotly does not
+    publish stable hashes for the latest tag and we want the latest
+    minor automatically; pin to a specific version if reproducibility
+    becomes a concern.
+  -->
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" defer></script>
+  <script src="/static/app.js" type="module" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark">NJ-HB</span>
+      <span class="brand-name">Housing Burden Terminal</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab" role="tab" data-view="trend"    aria-selected="true">Trend</button>
+      <button class="tab" role="tab" data-view="compare"  aria-selected="false">Compare</button>
+      <button class="tab" role="tab" data-view="segments" aria-selected="false">Segments</button>
+    </nav>
+    <div class="meta">
+      <a class="cross-app" href="/fraud" title="Civic-integrity / FEC bulk terminal">
+        Civic Integrity &rarr;
+      </a>
+      <span id="health-badge" class="badge badge-unknown" title="API health">db: ?</span>
+      <a class="api-link" href="/docs" target="_blank" rel="noopener">API docs</a>
+    </div>
+  </header>
+
+  <section class="controls" aria-label="Filters">
+    <label class="control">
+      <span>Product</span>
+      <select id="ctl-product">
+        <option value="acs5" selected>acs5 (5-year)</option>
+        <option value="acs1">acs1 (1-year)</option>
+      </select>
+    </label>
+
+    <label class="control">
+      <span>Tenure</span>
+      <select id="ctl-tenure">
+        <option value="renter"       selected>Renter</option>
+        <option value="owner_w_mtg">Owner, with mortgage</option>
+        <option value="owner_no_mtg">Owner, no mortgage</option>
+      </select>
+    </label>
+
+    <label class="control" data-views="trend segments">
+      <span>County</span>
+      <select id="ctl-county"><option value="">(loading...)</option></select>
+    </label>
+
+    <label class="control" data-views="compare">
+      <span>Year</span>
+      <select id="ctl-year"><option value="">(loading...)</option></select>
+    </label>
+
+    <label class="control" data-views="segments">
+      <span>Segment</span>
+      <select id="ctl-segment">
+        <option value="race">Race</option>
+        <option value="hispanic">Hispanic origin</option>
+        <option value="age_band">Age band</option>
+        <option value="citizenship">Citizenship</option>
+      </select>
+    </label>
+
+    <button id="btn-refresh" class="primary" type="button">Refresh</button>
+  </section>
+
+  <section class="release-panel" aria-label="Upcoming data releases">
+    <div class="release-panel-head">
+      <h3 class="release-panel-title">Upcoming releases</h3>
+      <span id="release-panel-meta" class="release-panel-meta"></span>
+      <a class="release-panel-api" href="/release-calendar?days=14" target="_blank" rel="noopener">/release-calendar</a>
+    </div>
+    <div id="release-panel-scroll" class="release-panel-scroll">
+      <table class="release-table" aria-describedby="release-panel-meta">
+        <thead>
+          <tr>
+            <th scope="col">Source</th>
+            <th scope="col">Cadence</th>
+            <th scope="col">Next expected (ET)</th>
+            <th scope="col">In 14d</th>
+            <th scope="col">Freshness</th>
+          </tr>
+        </thead>
+        <tbody id="release-panel-tbody">
+          <tr><td colspan="5" class="release-panel-loading">Loading calendar…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div id="release-panel-status" class="status release-panel-status"></div>
+  </section>
+
+  <main id="app">
+    <section id="view-trend" class="view active" aria-labelledby="trend-title">
+      <header class="view-header">
+        <h2 id="trend-title">Burden ratio over time</h2>
+        <p class="hint">
+          Pick a county and tenure. Each line is the weighted-median
+          monthly housing cost / income for that county-tenure-year. Bands
+          are 90% CIs from SDR replicate-weight standard errors. Note:
+          for ACS 5-year, adjacent points share four years of sample and
+          are therefore positively correlated; treat the bands as
+          conservative point uncertainty rather than independence-based
+          tests of YoY change.
+        </p>
+      </header>
+      <div id="chart-trend" class="chart"></div>
+      <div id="trend-status" class="status"></div>
+    </section>
+
+    <section id="view-compare" class="view" aria-labelledby="compare-title">
+      <header class="view-header">
+        <h2 id="compare-title">Counties ranked, single year</h2>
+        <p class="hint">
+          All 21 NJ counties for the selected (year, product, tenure).
+          Sorted by burden ratio; horizontal bars include 1.645*SE error
+          marks. Suppressed cells (weighted_n &lt; 1000) are excluded.
+        </p>
+      </header>
+      <div id="chart-compare" class="chart"></div>
+      <div id="compare-status" class="status"></div>
+    </section>
+
+    <section id="view-segments" class="view" aria-labelledby="segments-title">
+      <header class="view-header">
+        <h2 id="segments-title">Demographic breakdown, latest vintage</h2>
+        <p class="hint">
+          Burden ratio by segment (race / hispanic origin / age band /
+          citizenship) for the selected county and tenure, latest
+          published year of the selected product. Use this to ask
+          "within this county-tenure, who is most exposed?". Error bars
+          use SDR-based replicate-weight SEs.
+        </p>
+      </header>
+      <div id="chart-segments" class="chart"></div>
+      <div id="segments-status" class="status"></div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <span>
+      Source: U.S. Census Bureau ACS PUMS, weighted to county via
+      ref.puma2010_county_xwalk + ref.puma2020_county_xwalk.
+    </span>
+    <a id="freshness-badge" class="freshness-footer" href="/docs" title="Dataset freshness from GET /assets (OpenAPI)">datasets: —</a>
+  </footer>
+</body>
+</html>

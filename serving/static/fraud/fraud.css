@@ -1,0 +1,778 @@
+/*
+ * Fraud / civic-integrity terminal stylesheet.
+ *
+ * Visual goals:
+ *  - dense, table-first layout (this is row-by-row inspection, not charts)
+ *  - dark Bloomberg-style palette so amber/cyan accent colors pop
+ *  - zero external CSS framework; only Tabulator's "midnight" theme
+ *    is loaded from a CDN -- everything else is hand-written here so
+ *    we control the exact tokens (and there is no Tailwind/Bootstrap
+ *    JIT step to babysit).
+ */
+
+:root {
+  --bg:           #0a0e14;
+  --bg-elev-1:    #11161e;
+  --bg-elev-2:    #161d28;
+  --border:       #1f2937;
+  --text-hi:      #e5e7eb;
+  --text-mid:     #9ca3af;
+  --text-low:     #6b7280;
+  --accent:       #f59e0b;        /* amber */
+  --accent-soft:  #f59e0b22;
+  --info:         #38bdf8;        /* cyan */
+  --good:         #10b981;
+  --warn:         #f97316;
+  --bad:          #ef4444;
+  --font-mono:    "JetBrains Mono", "SF Mono", "Menlo", monospace;
+  --font-sans:    "Inter", system-ui, -apple-system, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text-hi);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+a { color: var(--info); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ===================== Top bar ===================== */
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  background: var(--bg-elev-1);
+  border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: baseline; gap: 8px; }
+.brand-mark {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--accent);
+  font-size: 14px;
+}
+.brand-sub {
+  color: var(--text-mid);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.topbar-nav { display: flex; gap: 16px; }
+.nav-link {
+  color: var(--text-mid);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* ===================== Summary strip ===================== */
+.summary {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.summary-card {
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+}
+.summary-label {
+  color: var(--text-mid);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.summary-value {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 18px;
+  color: var(--accent);
+}
+
+/* ===================== Tabs ===================== */
+.tabs {
+  display: flex;
+  gap: 0;
+  background: var(--bg-elev-1);
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px;
+}
+.tab-button {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--text-mid);
+  padding: 10px 16px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: color 80ms, border-color 80ms;
+}
+.tab-button:hover { color: var(--text-hi); }
+.tab-button.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tab-pane { display: none; padding: 12px 16px; }
+.tab-pane.active { display: block; }
+
+/* ===================== Filter bar ===================== */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: flex-end;
+  padding: 10px 12px;
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-bottom: 10px;
+}
+.filter-bar label {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  color: var(--text-mid);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  gap: 3px;
+}
+.filter-bar label.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+  color: var(--text-mid);
+}
+.filter-bar input[type="text"],
+.filter-bar input[type="number"],
+.filter-bar input[type="date"],
+.filter-bar select {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  color: var(--text-hi);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 5px 7px;
+  min-width: 120px;
+  border-radius: 3px;
+}
+.filter-bar input:focus,
+.filter-bar select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.filter-bar button {
+  background: var(--accent);
+  color: var(--bg);
+  border: 0;
+  padding: 6px 12px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.filter-bar button[type="reset"] {
+  background: transparent;
+  color: var(--text-mid);
+  border: 1px solid var(--border);
+}
+.filter-bar button:hover { filter: brightness(1.1); }
+
+.export {
+  display: inline-block;
+  padding: 6px 12px;
+  background: transparent;
+  color: var(--info);
+  border: 1px solid var(--info);
+  border-radius: 3px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.export:hover {
+  background: var(--info);
+  color: var(--bg);
+  text-decoration: none;
+}
+
+/* ===================== Empty-state banner ===================== */
+.banner {
+  background: var(--accent-soft);
+  border-left: 3px solid var(--accent);
+  color: var(--text-hi);
+  padding: 10px 12px;
+  margin: 0 0 10px;
+  font-size: 12px;
+  border-radius: 0 3px 3px 0;
+}
+.banner code {
+  background: var(--bg-elev-2);
+  padding: 1px 5px;
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* ===================== Tables ===================== */
+.table-wrap {
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.tabulator-host {
+  height: calc(100vh - 360px);
+  min-height: 400px;
+}
+.paginator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  background: var(--bg-elev-2);
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mid);
+}
+.paginator button {
+  background: transparent;
+  color: var(--text-hi);
+  border: 1px solid var(--border);
+  padding: 3px 9px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+}
+.paginator button:disabled {
+  color: var(--text-low);
+  cursor: not-allowed;
+}
+.paginator .pager-meta { margin-left: auto; }
+
+/* Tabulator cell tweak: link-style for ID columns */
+.tabulator .row-id-link {
+  color: var(--info);
+  cursor: pointer;
+  text-decoration: underline;
+  font-family: var(--font-mono);
+}
+
+/* ===================== Side detail panel ===================== */
+.detail-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 480px;
+  max-width: 95vw;
+  background: var(--bg-elev-1);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.5);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+}
+/*
+ * The HTML5 `hidden` attribute maps to `display: none`, but our
+ * `display: flex` rule above out-specificities that. Restore the
+ * intent explicitly so the panel really hides on close + initial load.
+ */
+.detail-panel[hidden] { display: none; }
+.detail-panel header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background: var(--bg-elev-2);
+  border-bottom: 1px solid var(--border);
+}
+.detail-title {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--accent);
+  letter-spacing: 0.06em;
+}
+.detail-close {
+  background: transparent;
+  border: 0;
+  color: var(--text-mid);
+  font-size: 20px;
+  cursor: pointer;
+}
+.detail-body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.detail-body table.kv {
+  width: 100%;
+  border-collapse: collapse;
+}
+.detail-body table.kv td {
+  padding: 3px 6px;
+  border-bottom: 1px dotted var(--border);
+  vertical-align: top;
+}
+.detail-body table.kv td.k {
+  color: var(--text-mid);
+  width: 38%;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+.detail-body table.kv td.v {
+  color: var(--text-hi);
+}
+.detail-body h3 {
+  margin: 16px 0 6px;
+  font-size: 11px;
+  color: var(--text-mid);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-family: var(--font-sans);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 3px;
+}
+.detail-body .empty-note {
+  color: var(--text-low);
+  font-style: italic;
+}
+
+/* ===================== Footer ===================== */
+.footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev-1);
+  font-size: 11px;
+  color: var(--text-mid);
+}
+
+/* ===================== Fraud-metrics tab ===================== */
+/* Two-pane layout: signal sidebar on the left, drilldown on the right.
+   The sidebar is a fixed-width column so the table area can resize. */
+.metrics-layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 0;
+  height: 100%;
+  min-height: 0;
+}
+.metrics-sidebar {
+  border-right: 1px solid var(--border);
+  background: var(--bg-elev-1);
+  overflow-y: auto;
+  padding: 12px 0;
+}
+.metrics-sidebar-heading {
+  margin: 0 14px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-mid);
+  font-family: var(--font-sans);
+}
+.metrics-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.metrics-list li {
+  padding: 8px 14px;
+  border-left: 3px solid transparent;
+  cursor: pointer;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.metrics-list li:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.metrics-list li.active {
+  background: rgba(255, 178, 0, 0.08);
+  border-left-color: var(--accent);
+}
+.metrics-list li .metric-name {
+  color: var(--text-hi);
+  font-family: var(--font-sans);
+  font-weight: 600;
+}
+.metrics-list li .metric-meta {
+  color: var(--text-mid);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  display: flex;
+  justify-content: space-between;
+}
+.metrics-list li .metric-count {
+  color: var(--accent);
+  font-weight: 600;
+}
+.metrics-list-empty {
+  color: var(--text-low);
+  font-style: italic;
+  padding: 8px 14px;
+}
+
+/* Each tier gets a divider so visually grouped */
+.metrics-list li.tier-divider {
+  cursor: default;
+  padding: 14px 14px 4px;
+  border-left: 0;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-low);
+  background: transparent;
+}
+.metrics-list li.tier-divider:hover {
+  background: transparent;
+}
+
+.metrics-main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.metrics-header {
+  padding: 14px 18px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev-1);
+}
+.metrics-header h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  color: var(--text-hi);
+  display: inline-block;
+  margin-right: 10px;
+}
+.metrics-tier-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(255, 178, 0, 0.15);
+  color: var(--accent);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-family: var(--font-sans);
+  vertical-align: middle;
+}
+.metrics-description {
+  margin: 6px 0 4px;
+  font-size: 12px;
+  color: var(--text-mid);
+  max-width: 80ch;
+  line-height: 1.5;
+}
+.metrics-threshold {
+  margin: 4px 0 8px;
+  font-size: 11px;
+  color: var(--text-low);
+  font-family: var(--font-mono);
+  border-left: 2px solid var(--accent);
+  padding-left: 8px;
+}
+.metrics-controls {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.metrics-controls label {
+  display: flex;
+  flex-direction: column;
+  font-size: 10px;
+  color: var(--text-mid);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  gap: 2px;
+}
+.metrics-controls select {
+  background: var(--bg-elev-0);
+  color: var(--text-hi);
+  border: 1px solid var(--border);
+  padding: 4px 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.metrics-controls button,
+.metrics-controls .export {
+  background: var(--accent);
+  color: #1a1100;
+  border: 0;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  text-decoration: none;
+}
+.metrics-controls .export {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+/* ===================== Risk queue (Tier 4 v3) =====================
+ * The risk queue inherits the standard filter-bar / table-wrap /
+ * paginator styles from above. The bits below are queue-and-panel-
+ * specific: score badges, share% bars in the evidence panel, and
+ * the queue's small footnote.
+ */
+
+/* Risk-score badge in the queue's "score" column.
+ * Color buckets:
+ *   80..100  -> --bad  (immediate-action band)
+ *   60..80   -> --warn (worth a closer look)
+ *   40..60   -> --accent (notable but bounded)
+ *   20..40   -> muted text-mid
+ *   0..20    -> text-low (background noise)
+ * Buckets match the L3a intuition: at SCORE_K=50 and the floor
+ * percentile 0.95, a single severity-3 signal at percentile 1.00
+ * lands the entity at 51 -- i.e. mid-band, "notable but bounded".
+ * Two such signals push it to ~76 (warn). Three to ~93 (bad).
+ */
+.risk-score-badge {
+  display: inline-block;
+  min-width: 56px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: right;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+}
+.risk-score-badge.high {
+  background: rgba(239, 68, 68, 0.18);
+  color: var(--bad);
+  border-color: rgba(239, 68, 68, 0.55);
+}
+.risk-score-badge.medium {
+  background: rgba(249, 115, 22, 0.18);
+  color: var(--warn);
+  border-color: rgba(249, 115, 22, 0.55);
+}
+.risk-score-badge.low {
+  background: rgba(245, 158, 11, 0.16);
+  color: var(--accent);
+  border-color: rgba(245, 158, 11, 0.45);
+}
+.risk-score-badge.faint { color: var(--text-mid); }
+.risk-score-badge.zero  { color: var(--text-low); }
+
+/* Severity tag (1..5). Compact, mono, color-graded with the same
+   intuition as the score band so analysts can scan at a glance. */
+.severity-tag {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 6px;
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+}
+.severity-tag.s5 { background: rgba(239, 68, 68, 0.20); color: var(--bad); }
+.severity-tag.s4 { background: rgba(249, 115, 22, 0.20); color: var(--warn); }
+.severity-tag.s3 { background: rgba(245, 158, 11, 0.20); color: var(--accent); }
+.severity-tag.s2 { background: rgba(56, 189, 248, 0.16); color: var(--info); }
+.severity-tag.s1 { background: rgba(156, 163, 175, 0.18); color: var(--text-mid); }
+
+/* Pill rendering for the queue's "signals" column. The queue row
+   shows the list of signal_ids that fired; each becomes a small
+   pill so the eye can scan whether a row is "treasurer" or
+   "address" risk before clicking through. */
+.signal-pill {
+  display: inline-block;
+  margin: 0 3px 2px 0;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(56, 189, 248, 0.10);
+  color: var(--info);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(56, 189, 248, 0.28);
+}
+.signal-pill.more {
+  background: transparent;
+  color: var(--text-mid);
+  border-color: var(--border);
+}
+
+/* Footnote under the queue. Honest framing: this is a rank, not a
+   probability. */
+.risk-footnote {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--text-low);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  max-width: 90ch;
+}
+.risk-footnote code {
+  font-family: var(--font-mono);
+  background: var(--bg-elev-2);
+  padding: 0 4px;
+  border-radius: 2px;
+  font-size: 10px;
+}
+
+/* ===================== Risk evidence panel =====================
+ * Rendered inside the existing .detail-panel slot (no new layout).
+ * The panel has three blocks:
+ *   1. Score header (very large numeric, color-graded).
+ *   2. Aggregate kv (kind, n_signals, max_severity, etc.).
+ *   3. Per-observation table -- the table is the contract; analysts
+ *      read across rows like a spreadsheet.
+ */
+.risk-panel-score {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 12px 0 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 10px;
+}
+.risk-panel-score .num {
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+.risk-panel-score .num.high   { color: var(--bad); }
+.risk-panel-score .num.medium { color: var(--warn); }
+.risk-panel-score .num.low    { color: var(--accent); }
+.risk-panel-score .num.faint  { color: var(--text-mid); }
+.risk-panel-score .num.zero   { color: var(--text-low); }
+.risk-panel-score .label {
+  font-family: var(--font-sans);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+  color: var(--text-mid);
+}
+
+/* Per-observation table inside the panel. We deliberately use a
+   plain HTML table (not a second Tabulator) -- the row count is
+   bounded by the catalog size (currently 8 Tier-A signals; even
+   a future 50-signal catalog renders fast). Keeps the side panel
+   lightweight and printable. */
+table.risk-evidence {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  margin-top: 6px;
+}
+table.risk-evidence th {
+  background: var(--bg-elev-2);
+  color: var(--text-mid);
+  text-align: left;
+  font-weight: 500;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+table.risk-evidence th.num,
+table.risk-evidence td.num { text-align: right; }
+table.risk-evidence td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-hi);
+  vertical-align: middle;
+}
+table.risk-evidence tr:hover td {
+  background: rgba(56, 189, 248, 0.04);
+}
+table.risk-evidence td.signal a {
+  color: var(--info);
+  text-decoration: none;
+}
+table.risk-evidence td.signal a:hover {
+  text-decoration: underline;
+}
+table.risk-evidence td.bucket {
+  color: var(--text-mid);
+}
+
+/* Score-share% bar inside the per-observation table. Red-orange-amber
+   gradient cued by share size. Two-cell render: a visible bar in the
+   td plus the numeric label aligned right. */
+.share-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.share-cell .bar {
+  flex: 0 0 auto;
+  width: 60px;
+  height: 8px;
+  background: var(--bg-elev-2);
+  border-radius: 1px;
+  overflow: hidden;
+  position: relative;
+}
+.share-cell .bar > span {
+  position: absolute;
+  top: 0; left: 0; bottom: 0;
+  background: var(--accent);
+}
+.share-cell .bar > span.high   { background: var(--bad); }
+.share-cell .bar > span.medium { background: var(--warn); }
+.share-cell .label {
+  flex: 0 0 auto;
+  min-width: 36px;
+  text-align: right;
+  color: var(--text-mid);
+}
+
+.risk-panel-actions {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 4px;
+}
+.risk-panel-actions .export {
+  font-size: 11px;
+  padding: 4px 10px;
+}

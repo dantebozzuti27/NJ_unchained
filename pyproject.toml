@@ -1,0 +1,192 @@
+[project]
+name = "nj-affordability"
+version = "0.0.1"
+description = "NJ county-level affordability erosion + civic-integrity substrate. See `idea` for the spec."
+requires-python = ">=3.13"
+readme = "README.md"
+
+dependencies = [
+    "click>=8.3",
+    "httpx>=0.28",
+    "polars>=1.40",
+    "psycopg[binary,pool]>=3.3",
+    "pydantic>=2.13",
+    "fastexcel>=0.11",
+    "rich>=14.0",
+    "structlog>=25.0",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "hypothesis>=6.150",
+    "mypy>=1.20",
+    "pytest>=9.0",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.14",
+    "xlsxwriter>=3.2",
+]
+# Orchestration extras: Dagster + Postgres run/event store. Kept as an
+# optional install because Dagster pulls in ~50 transitive deps and is
+# only needed when running the DAG (not for ad-hoc CLI loads or tests).
+orchestration = [
+    "dagster>=1.9",
+    "dagster-postgres>=0.25",
+    "dagster-webserver>=1.9",
+]
+# Serving extras: FastAPI + uvicorn + connection pooling. The serving
+# package is the BBG-terminal-style API surface (read path).
+serving = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "psycopg-pool>=3.2",
+    "httpx>=0.28",  # already a runtime dep; re-listed for completeness
+]
+
+[project.scripts]
+nj-migrate = "scripts.migrate:cli"
+nj-ingest-lca = "ingestion.dol_oflc_lca:cli"
+nj-ingest-cpi = "ingestion.bls_cpi:cli"
+nj-ingest-acs-income = "ingestion.census_acs_income:cli"
+nj-ingest-acs-housing = "ingestion.census_acs_housing:cli"
+nj-ingest-fhfa = "ingestion.fhfa_hpi:cli"
+nj-ingest-fred = "ingestion.fred_mortgage_rates:cli"
+nj-ingest-dca = "ingestion.nj_dca_property_tax:cli"
+nj-ingest-pums = "ingestion.census_acs_pums:cli"
+nj-ingest-fec  = "ingestion.fec:cli"
+nj-ingest-leie = "ingestion.hhs_oig_leie:cli"
+nj-ingest-usaspending = "ingestion.usaspending:cli"
+nj-ingest-sam-exclusions = "ingestion.sam_gov_exclusions:cli"
+nj-serve = "serving.cli:main"
+nj-terminal = "serving.terminal_cli:main"
+nj = "serving.terminal_nj:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = [
+    "derived",
+    "ingestion",
+    "orchestration",
+    "scripts",
+    "serving",
+    "serving.routes",
+]
+
+# Ship the bundled front-end (HTML/CSS/JS) as package data so a built
+# wheel still serves the UI. Editable installs resolve via __file__
+# regardless; this entry is for wheel/sdist correctness.
+[tool.setuptools.package-data]
+serving = ["static/*"]
+
+
+# ----------------------------------------------------------------------------
+# ruff
+# ----------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+extend-exclude = [".venv", "__pycache__", "data"]
+src = ["derived", "ingestion", "orchestration", "scripts", "serving", "tests"]
+
+[tool.ruff.lint]
+# Enable a deliberately strict set. Each rule family selected has a stated
+# reason; we do not enable rule families "because they exist".
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort (deterministic import ordering)
+    "B",    # flake8-bugbear (real-bug patterns)
+    "UP",   # pyupgrade (use modern Python idioms)
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking (move imports to TYPE_CHECKING blocks)
+    "RUF",  # ruff-specific rules
+    "S",    # bandit-style security (relevant for SQL injection vectors)
+    "PTH",  # use pathlib over os.path
+    "D",    # pydocstyle (we keep public APIs documented)
+    "ANN",  # flake8-annotations (type hints on public APIs)
+]
+ignore = [
+    "D100",  # Missing docstring in public module (we use header comments)
+    "D104",  # Missing docstring in public package
+    "D107",  # Missing docstring in __init__
+    "D203",  # one-blank-line-before-class (conflicts with D211)
+    "D213",  # multi-line-summary-second-line (conflicts with D212)
+    "ANN401",  # Allow `Any` in narrowly-justified spots
+    "S101",  # asserts are fine (especially in tests)
+    "S608",  # SQL string composition warnings; we use psycopg parameter binding
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests: docstrings, annotations, fake-secret detection, and the TYPE_CHECKING
+# import dance are all noise in fixture-heavy test modules.
+"tests/**" = ["D", "ANN", "S105", "S106", "TC003"]
+"scripts/**" = ["D"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["derived", "ingestion", "orchestration", "scripts", "serving", "tests"]
+
+# ----------------------------------------------------------------------------
+# mypy
+# ----------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+disallow_untyped_decorators = true
+disallow_any_generics = true
+no_implicit_reexport = true
+plugins = ["pydantic.mypy"]
+exclude = [
+    "^\\.venv/",
+    "^build/",
+    "^data/",
+    "^__pycache__/",
+]
+
+# Dagster's type stubs are incomplete and would otherwise force us to
+# scatter `# type: ignore` throughout the orchestration package. Keep
+# strict typing inside our code that USES Dagster decorators; relax
+# typing for the dagster import surface only.
+[[tool.mypy.overrides]]
+module = ["dagster", "dagster.*"]
+ignore_missing_imports = true
+
+# The orchestration package interacts with Dagster's generic types
+# (ConfigurableResource, MaterializeResult). Stubs treat these as
+# generic-with-type-args, but in practice dagster.MaterializeResult
+# without type args is the documented usage. Relax disallow_any_generics
+# only here.
+[[tool.mypy.overrides]]
+module = ["orchestration.*"]
+disallow_any_generics = false
+
+# ----------------------------------------------------------------------------
+# pytest
+# ----------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--showlocals",
+    "-q",
+]
+markers = [
+    "live_pg: requires PG_TEST_DSN to point at an ephemeral Postgres",
+    "slow: longer-running tests (download/parse large fixtures)",
+]
+filterwarnings = [
+    "error",
+    # pydantic v2 sometimes emits its own deprecation warnings; demote them.
+    "default::DeprecationWarning:pydantic",
+]
