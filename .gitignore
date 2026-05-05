@@ -42,3 +42,14 @@ data/staging/recompute/*.json
 !.env.example
 *.pem
 *.key
+
+# --- Next.js / Node (hoisted from web/) -------------------------------------
+node_modules/
+.next/
+out/
+.vercel/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+.env.local
+.env.*.local

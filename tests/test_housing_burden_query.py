@@ -1,6 +1,6 @@
 """Live-PG validation of the housing-burden SQL surface used by the screener.
 
-The Next.js screener (`web/lib/housing.ts`) runs two queries against the
+The Next.js screener (`lib/housing.ts`) runs two queries against the
 production Postgres / Neon substrate to build the public housing pages:
 
 1.  A per-county "latest joined year" rollup that joins
@@ -21,7 +21,7 @@ a freshly-migrated Postgres. That gives us:
 
 If the frontend and backend ever drift apart, this test is the canary.
 We deliberately keep the SQL strings here byte-equivalent (modulo
-parameter syntax) to ``web/lib/housing.ts`` and call out the contract
+parameter syntax) to ``lib/housing.ts`` and call out the contract
 in comments.
 """
 
@@ -60,7 +60,7 @@ from scripts.migrate import (
     discover,
 )
 
-# Must match `BURDEN_BASE_YEAR` in web/lib/housing.ts.
+# Must match `BURDEN_BASE_YEAR` in lib/housing.ts.
 BURDEN_BASE_YEAR = 2010
 
 pytestmark = pytest.mark.live_pg
@@ -226,7 +226,7 @@ def test_screener_listing_query_burden_ratios(burden_db: psycopg.Connection) -> 
     expected burden ratios.
 
     This SQL is a 1:1 mirror of `listCountyBurden()` in
-    web/lib/housing.ts, modulo psycopg parameter syntax. If a future
+    lib/housing.ts, modulo psycopg parameter syntax. If a future
     migration breaks the join, this test fails before the screener
     page does.
 
