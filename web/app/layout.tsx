@@ -4,10 +4,11 @@ import Link from "next/link";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "NJ Unchained — civic-integrity screener",
+  title: "NJ Unchained — housing affordability + civic integrity",
   description:
-    "Risk-scored screener of New Jersey political and federal-procurement entities, " +
-    "built on cross-source signals from FEC, USAspending, HHS-OIG LEIE, and SAM.gov.",
+    "New Jersey housing-affordability tracker and civic-integrity screener: " +
+    "county-level burden divergence (FHFA HPI vs ACS real income) plus " +
+    "cross-source risk signals from FEC, USAspending, HHS-OIG LEIE, and SAM.gov.",
 };
 
 export default function RootLayout({
@@ -28,6 +29,12 @@ export default function RootLayout({
               Unchained
             </Link>
             <nav className="flex gap-4 text-sm">
+              <Link
+                href="/housing"
+                className="hover:underline underline-offset-4"
+              >
+                Housing
+              </Link>
               <Link
                 href="/risk"
                 className="hover:underline underline-offset-4"

@@ -17,25 +17,35 @@ export default async function HomePage() {
           New Jersey, unchained from corruption and cost.
         </h1>
         <p className="mt-3 max-w-2xl text-zinc-600 dark:text-zinc-400">
-          A public-interest screener that ranks New Jersey political and
-          federal-procurement entities by cross-source risk evidence.
-          Every flagged entity links to its underlying data — FEC
-          contributions, federal contracts, federal exclusion lists.
-          No probability of fraud is asserted; the score is a
-          percentile of anomalousness within an entity's peer group.
+          Two open-data screeners on one platform. The{" "}
+          <strong>housing tracker</strong> measures the divergence between
+          home-price growth (FHFA HPI) and real wage growth (ACS) for each
+          of New Jersey&rsquo;s 21 counties. The{" "}
+          <strong>civic-integrity screener</strong> ranks political and
+          federal-procurement entities by cross-source risk evidence
+          (FEC × USAspending × LEIE × SAM.gov). Every figure links to its
+          underlying source. No probability of fraud is asserted; risk is
+          a percentile of anomalousness within an entity&rsquo;s peer
+          group.
         </p>
-        <div className="mt-6 flex gap-3">
+        <div className="mt-6 flex flex-wrap gap-3">
           <Link
-            href="/risk"
+            href="/housing"
             className="inline-flex items-center gap-2 rounded-md bg-zinc-900 dark:bg-zinc-100 px-4 py-2 text-sm font-medium text-white dark:text-zinc-900 hover:bg-zinc-700 dark:hover:bg-zinc-200"
           >
-            Open the risk queue →
+            Housing burden →
+          </Link>
+          <Link
+            href="/risk"
+            className="inline-flex items-center gap-2 rounded-md border border-zinc-300 dark:border-zinc-700 px-4 py-2 text-sm font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          >
+            Risk queue →
           </Link>
           <Link
             href="/about"
             className="inline-flex items-center gap-2 rounded-md border border-zinc-300 dark:border-zinc-700 px-4 py-2 text-sm font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800"
           >
-            How the score is computed
+            Methodology
           </Link>
         </div>
       </section>

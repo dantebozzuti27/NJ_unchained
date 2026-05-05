@@ -5,13 +5,52 @@ export const metadata = {
 export default function AboutPage() {
   return (
     <article className="prose prose-zinc dark:prose-invert max-w-none">
-      <h1>How the risk score is computed</h1>
+      <h1>Methodology</h1>
 
       <p className="lead">
-        NJ Unchained surfaces a 0–100 <strong>risk score</strong> per
-        entity — candidate, committee, treasurer, donor, contractor, or
-        address cluster — within a federal election cycle. The number is
-        a <em>percentile of anomalousness</em> within an entity&apos;s
+        NJ Unchained is a two-pillar public-interest screener for New
+        Jersey: <strong>housing affordability</strong> (county-level
+        burden divergence) and <strong>civic integrity</strong>{" "}
+        (cross-source risk evidence on political and federal-procurement
+        entities). Both pillars share one Postgres substrate; both
+        publish their underlying data and computations.
+      </p>
+
+      <h2>Pillar 1 — Housing affordability</h2>
+      <p>
+        For each NJ county we compute a <strong>burden ratio</strong>:
+        the FHFA House Price Index growth divided by ACS 5-year median
+        household income growth, both deflated to constant dollars via
+        CPI-U All Items and re-indexed so that 2010 = 100 (or 1.0 in
+        ratio form).
+      </p>
+      <pre>
+{`burden_ratio(county, year) =
+    [HPI(county, year) / HPI(county, 2010)]
+  ÷ [real_income(county, year) / real_income(county, 2010)]`}
+      </pre>
+      <p>
+        A ratio of 1.40 means home-price growth has outpaced real wage
+        growth by 40% since the base year — i.e. a household needs ~40%
+        more inflation-adjusted income to afford the same house. Tier
+        bands: <strong>STRESS</strong> (≥ 1.40), <strong>ELEVATED</strong>{" "}
+        (≥ 1.15), <strong>TRACKING</strong> (≥ 0.95), <strong>LAGGING</strong>{" "}
+        (&lt; 0.95).
+      </p>
+      <p>
+        This metric deliberately ignores interest-rate effects on
+        monthly mortgage payments and tenure-segmented (renter vs owner)
+        cost-burden share. Those richer dimensions live in the backend{" "}
+        <code>derived.housing_burden_ratio</code> view, materialized
+        from ACS PUMS.
+      </p>
+
+      <h2>Pillar 2 — Civic integrity: how the risk score is computed</h2>
+      <p>
+        We surface a 0–100 <strong>risk score</strong> per entity —
+        candidate, committee, treasurer, donor, contractor, or address
+        cluster — within a federal election cycle. The number is a{" "}
+        <em>percentile of anomalousness</em> within an entity&apos;s
         peer group. It is <strong>not</strong> a probability of fraud.
       </p>
 
