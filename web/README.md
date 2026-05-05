@@ -45,12 +45,16 @@ From the **repo root** (not `web/`):
 ```bash
 # Activate the backend venv (created with `uv venv` or `python -m venv .venv`)
 source .venv/bin/activate
+pip install -e .
 
-# Run all migrations in order (this is the same script the backend uses)
-PG_DSN='<your neon pooled url>' python scripts/migrate.py
+# Run all migrations in order
+PG_DSN='<your neon pooled url>' nj-migrate apply
 
-# Load seed reference tables
-PG_DSN='<your neon pooled url>' python scripts/load_reference_data.py
+# Apply seed migrations (release calendar, reference tables, etc.)
+PG_DSN='<your neon pooled url>' nj-migrate seed
+
+# Confirm everything applied
+PG_DSN='<your neon pooled url>' nj-migrate status | tail -20
 
 # Optional: ingest live federal data (LEIE, SAM, FEC, USAspending, ...)
 PG_DSN='<your neon pooled url>' nj-ingest-leie load <leie.csv>
