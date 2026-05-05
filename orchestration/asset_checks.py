@@ -1402,6 +1402,57 @@ def fraud_signal_config_orphan_check(
 
 @asset_check(
     asset=AssetKey(["derived", "fraud_signal_config"]),
+    name="age_decay_function_utc_anchored",
+    description=(
+        "derived.f_leie_age_decay must be UTC-anchored, not session-TZ "
+        "dependent. We assert that decay(today_utc) == 1.0 exactly. "
+        "Pre-067 the function used CURRENT_DATE which depends on the "
+        "session TimeZone GUC, so two Neon instances in different "
+        "regions computed different weights for the same exclusion "
+        "and tests run near midnight UTC saw 0.9997 instead of 1.0. "
+        "ERROR severity: a regression here breaks substrate-honesty "
+        "(L1 raw_values would no longer be a deterministic function "
+        "of input) and silently shifts the analyst queue ranking."
+    ),
+)
+def fraud_signal_config_decay_utc_anchored(
+    context: AssetCheckExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> AssetCheckResult:
+    """Pin f_leie_age_decay to UTC by asserting decay(today_utc) == 1.0.
+
+    The check seeds today's UTC date as the input, executes the
+    function in the same transaction, and asserts the returned
+    NUMERIC equals 1.0 exactly. If the function is using session-TZ
+    CURRENT_DATE and the session is offset from UTC across midnight,
+    the assertion fails with a sub-1.0 value, surfacing the
+    regression before it ships to production.
+    """
+    with pg.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT derived.f_leie_age_decay(((NOW() AT TIME ZONE 'UTC')::DATE))"
+        )
+        row = cur.fetchone()
+    weight = float(row[0]) if row else 0.0
+    if abs(weight - 1.0) < 1e-12:
+        passed, reason = True, "ok"
+    else:
+        passed, reason = False, "decay_today_utc_not_one_session_tz_leak"
+    details: dict[str, Any] = {
+        "decay_today_utc": weight,
+        "reason":          reason,
+    }
+    _emit(governance, dataset_id="derived.fraud_signal_config",
+          check_name="age_decay_function_utc_anchored",
+          passed=passed, details=details)
+    return AssetCheckResult(
+        passed=passed, severity=AssetCheckSeverity.ERROR, metadata=details,
+    )
+
+
+@asset_check(
+    asset=AssetKey(["derived", "fraud_signal_config"]),
     name="multiple_families_present",
     description=(
         "derived.fraud_signal_config must contain at least 2 distinct "
@@ -2639,4 +2690,6 @@ ALL_ASSET_CHECKS = [
     signal_donor_on_sam_match_rate_plausible,
     # FRAUD-F2 candidate-side projection of donor_on_sam
     signal_candidate_funded_by_sam_excluded_donors_match_rate_plausible,
+    # MIGRATION 067: regression-defense for f_leie_age_decay UTC anchor
+    fraud_signal_config_decay_utc_anchored,
 ]

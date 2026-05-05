@@ -109,7 +109,7 @@ def _seed_sam_individual(
     Default active_date is today so f_leie_age_decay returns 1.0.
     """
     if active_date is None:
-        active_date = _dt.date.today().isoformat()
+        active_date = _dt.datetime.now(_dt.UTC).date().isoformat()
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO raw.sam_gov_exclusion ("
@@ -144,7 +144,7 @@ def _seed_sam_firm(
 ) -> None:
     """Seed one SAM Firm exclusion (no last/first; should NOT fire donor_on_sam)."""
     if active_date is None:
-        active_date = _dt.date.today().isoformat()
+        active_date = _dt.datetime.now(_dt.UTC).date().isoformat()
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO raw.sam_gov_exclusion ("
@@ -313,7 +313,7 @@ def test_terminated_sam_exclusion_does_not_fire(
     fraud_db: psycopg.Connection,
 ) -> None:
     """Past termination_date is filtered by v_sam_exclusion_active."""
-    yesterday = (_dt.date.today() - _dt.timedelta(days=1)).isoformat()
+    yesterday = (_dt.datetime.now(_dt.UTC).date() - _dt.timedelta(days=1)).isoformat()
     _seed_sam_individual(
         fraud_db, record_hash="d" * 64,
         last="DOE", first="JANE",
@@ -370,7 +370,7 @@ def test_aggregates_multiple_contributions(
 
 def test_freshest_sam_record_picked(fraud_db: psycopg.Connection) -> None:
     """A donor matching multi-SAM rows -> freshest active_date wins."""
-    today = _dt.date.today().isoformat()
+    today = _dt.datetime.now(_dt.UTC).date().isoformat()
     _seed_sam_individual(
         fraud_db, record_hash="0" * 64,
         last="DOE", first="JANE",
@@ -474,7 +474,7 @@ def test_all_refund_donor_dropped(fraud_db: psycopg.Connection) -> None:
 def test_age_decay_applied(fraud_db: psycopg.Connection) -> None:
     """A 10-year-old SAM exclusion -> decay = exp(-1) ~= 0.3679."""
     ten_years_ago = (
-        _dt.date.today() - _dt.timedelta(days=int(365.25 * 10))
+        _dt.datetime.now(_dt.UTC).date() - _dt.timedelta(days=int(365.25 * 10))
     ).isoformat()
     _seed_sam_individual(
         fraud_db, record_hash="4" * 64,
@@ -639,7 +639,7 @@ def test_dual_fire_leie_and_sam_earns_diversity_bonus(
     signal_families includes both 'leie_bearing' and 'sam_bearing'.
     """
     # Seed LEIE + SAM for the same canonical key.
-    today = _dt.date.today().strftime("%Y%m%d")
+    today = _dt.datetime.now(_dt.UTC).date().strftime("%Y%m%d")
     with fraud_db.cursor() as cur:
         cur.execute(
             "INSERT INTO raw.hhs_oig_leie ("

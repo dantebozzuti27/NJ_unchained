@@ -99,7 +99,7 @@ def _insert_minimal(
 ) -> None:
     """Insert one minimal row covering only fields tests assert on."""
     if vintage_day is None:
-        vintage_day = dt.date.today()
+        vintage_day = dt.datetime.now(dt.UTC).date()
     if active_date is None:
         active_date = dt.date(2024, 1, 1)
     with conn.cursor() as cur:
@@ -163,7 +163,7 @@ def test_unknown_classification_rejected(
                 "  record_hash, classification, name, "
                 "  vintage_day, source_url, source_sha256"
                 ") VALUES (%s, 'Bogus', 'Anyone', %s, %s, %s)",
-                ("a" * 64, dt.date.today(),
+                ("a" * 64, dt.datetime.now(dt.UTC).date(),
                  "https://sam.gov/test.csv", "0" * 64),
             )
     fraud_db.rollback()
@@ -191,7 +191,7 @@ def test_uei_check_rejects_lowercase(fraud_db: psycopg.Connection) -> None:
                 "  record_hash, classification, name, uei, "
                 "  vintage_day, source_url, source_sha256"
                 ") VALUES (%s, 'Firm', 'ACME', 'abcdef123456', %s, %s, %s)",
-                ("c" * 64, dt.date.today(),
+                ("c" * 64, dt.datetime.now(dt.UTC).date(),
                  "https://sam.gov/test.csv", "0" * 64),
             )
     fraud_db.rollback()
@@ -207,7 +207,7 @@ def test_uei_check_rejects_wrong_length(
                 "  record_hash, classification, name, uei, "
                 "  vintage_day, source_url, source_sha256"
                 ") VALUES (%s, 'Firm', 'ACME', 'ABCDEF12345', %s, %s, %s)",
-                ("d" * 64, dt.date.today(),
+                ("d" * 64, dt.datetime.now(dt.UTC).date(),
                  "https://sam.gov/test.csv", "0" * 64),
             )
     fraud_db.rollback()
@@ -223,7 +223,7 @@ def test_record_hash_check_rejects_uppercase(
                 "  record_hash, classification, name, "
                 "  vintage_day, source_url, source_sha256"
                 ") VALUES (%s, 'Firm', 'ACME', %s, %s, %s)",
-                ("A" * 64, dt.date.today(),
+                ("A" * 64, dt.datetime.now(dt.UTC).date(),
                  "https://sam.gov/test.csv", "0" * 64),
             )
     fraud_db.rollback()
@@ -239,7 +239,7 @@ def test_all_blank_row_rejected(fraud_db: psycopg.Connection) -> None:
                 "  record_hash, classification, "
                 "  vintage_day, source_url, source_sha256"
                 ") VALUES (%s, 'Firm', %s, %s, %s)",
-                ("e" * 64, dt.date.today(),
+                ("e" * 64, dt.datetime.now(dt.UTC).date(),
                  "https://sam.gov/test.csv", "0" * 64),
             )
     fraud_db.rollback()
@@ -273,7 +273,7 @@ def test_active_view_excludes_past_termination(
         record_hash="0" * 64,
         classification="Firm",
         name="OLD FIRM",
-        termination_date=dt.date.today() - dt.timedelta(days=30),
+        termination_date=dt.datetime.now(dt.UTC).date() - dt.timedelta(days=30),
     )
     fraud_db.commit()
     with fraud_db.cursor() as cur:
@@ -317,7 +317,7 @@ def test_active_view_includes_future_termination(
         record_hash="2" * 64,
         classification="Firm",
         name="SCHEDULED TO REINSTATE",
-        termination_date=dt.date.today() + dt.timedelta(days=365),
+        termination_date=dt.datetime.now(dt.UTC).date() + dt.timedelta(days=365),
     )
     fraud_db.commit()
     with fraud_db.cursor() as cur:
@@ -341,7 +341,7 @@ def test_active_view_excludes_inactive_record_status(
         record_hash="3" * 64,
         classification="Firm",
         name="EARLY REINSTATEMENT",
-        termination_date=dt.date.today() + dt.timedelta(days=365),
+        termination_date=dt.datetime.now(dt.UTC).date() + dt.timedelta(days=365),
         record_status="Inactive",
     )
     fraud_db.commit()

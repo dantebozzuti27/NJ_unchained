@@ -102,7 +102,7 @@ def _seed_leie_individual(
     """
     import datetime as _dt
     if excldate is None:
-        excldate = _dt.date.today().strftime("%Y%m%d")
+        excldate = _dt.datetime.now(_dt.UTC).date().strftime("%Y%m%d")
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO raw.hhs_oig_leie ("
@@ -404,7 +404,7 @@ def test_award_double_count_safe_under_multi_leie(
     integration.
     """
     import datetime as _dt
-    today_yyyymmdd = _dt.date.today().strftime("%Y%m%d")
+    today_yyyymmdd = _dt.datetime.now(_dt.UTC).date().strftime("%Y%m%d")
     _seed_leie_individual(
         fraud_db, record_hash="3" * 64,
         lastname="LEE", firstname="ANNA",

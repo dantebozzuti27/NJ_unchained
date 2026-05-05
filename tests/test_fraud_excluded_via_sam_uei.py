@@ -115,7 +115,7 @@ def _seed_sam_exclusion(
     so derived.f_leie_age_decay returns 1.0 by default.
     """
     if active_date is None:
-        active_date = _dt.date.today().isoformat()
+        active_date = _dt.datetime.now(_dt.UTC).date().isoformat()
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO raw.sam_gov_exclusion ("
@@ -317,7 +317,7 @@ def test_terminated_sam_exclusion_does_not_fire(
     fraud_db: psycopg.Connection,
 ) -> None:
     """A SAM exclusion with past termination_date is filtered by v_sam_exclusion_active."""
-    yesterday = (_dt.date.today() - _dt.timedelta(days=1)).isoformat()
+    yesterday = (_dt.datetime.now(_dt.UTC).date() - _dt.timedelta(days=1)).isoformat()
     uei = "DEF456UVW123"
     _seed_sam_exclusion(
         fraud_db, record_hash="c" * 64, uei=uei,
@@ -398,7 +398,7 @@ def test_freshest_sam_record_picked_under_multi_exclusion(
     """
     uei = "PQR333STU444"
     old_date = "2010-01-01"
-    today    = _dt.date.today().isoformat()
+    today    = _dt.datetime.now(_dt.UTC).date().isoformat()
 
     _seed_sam_exclusion(
         fraud_db, record_hash="0" * 64, uei=uei,
@@ -440,7 +440,7 @@ def test_age_decay_applied_to_old_exclusion(
     """
     uei = "VWX555YZA666"
     ten_years_ago = (
-        _dt.date.today() - _dt.timedelta(days=int(365.25 * 10))
+        _dt.datetime.now(_dt.UTC).date() - _dt.timedelta(days=int(365.25 * 10))
     ).isoformat()
     _seed_sam_exclusion(
         fraud_db, record_hash="9" * 64, uei=uei,

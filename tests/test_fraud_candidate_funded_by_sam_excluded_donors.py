@@ -101,7 +101,7 @@ def _seed_sam_individual(
     record_status: str = "Active",
 ) -> None:
     if active_date is None:
-        active_date = _dt.date.today().isoformat()
+        active_date = _dt.datetime.now(_dt.UTC).date().isoformat()
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO raw.sam_gov_exclusion ("
@@ -480,7 +480,7 @@ def test_sam_firm_does_not_propagate(fraud_db: psycopg.Connection) -> None:
 
 def test_terminated_sam_does_not_fire(fraud_db: psycopg.Connection) -> None:
     """Past termination_date is filtered upstream by v_sam_exclusion_active."""
-    yesterday = (_dt.date.today() - _dt.timedelta(days=1)).isoformat()
+    yesterday = (_dt.datetime.now(_dt.UTC).date() - _dt.timedelta(days=1)).isoformat()
     _seed_sam_individual(
         fraud_db, record_hash="a" * 64,
         last="DOE", first="JANE",
@@ -577,7 +577,7 @@ def test_age_decay_applied_per_contribution(
 ) -> None:
     """A 10-year-old SAM exclusion -> per-contribution decay = exp(-1)."""
     ten_years_ago = (
-        _dt.date.today() - _dt.timedelta(days=int(365.25 * 10))
+        _dt.datetime.now(_dt.UTC).date() - _dt.timedelta(days=int(365.25 * 10))
     ).isoformat()
     _seed_sam_individual(
         fraud_db, record_hash="a" * 64,
@@ -641,7 +641,7 @@ def test_dual_fire_leie_sam_donors_for_one_candidate(
     test: the multi-family diversity bonus surfaces at the
     candidate level when distinct signal families corroborate.
     """
-    today = _dt.date.today().strftime("%Y%m%d")
+    today = _dt.datetime.now(_dt.UTC).date().strftime("%Y%m%d")
     # LEIE donor
     with fraud_db.cursor() as cur:
         cur.execute(

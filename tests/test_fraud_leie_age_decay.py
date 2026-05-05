@@ -89,7 +89,7 @@ def _decay_value(conn: psycopg.Connection, excldate: dt.date | None) -> float:
 
 
 def test_decay_today_is_one(fraud_db: psycopg.Connection) -> None:
-    today = dt.date.today()
+    today = dt.datetime.now(dt.UTC).date()
     w = _decay_value(fraud_db, today)
     assert w == 1.0, w
 
@@ -104,7 +104,7 @@ def test_decay_future_clamped_to_one(
     fraud_db: psycopg.Connection,
 ) -> None:
     """A future excldate (data error) is clamped to age=0 -> weight=1.0."""
-    one_year_ahead = dt.date.today() + dt.timedelta(days=365)
+    one_year_ahead = dt.datetime.now(dt.UTC).date() + dt.timedelta(days=365)
     w = _decay_value(fraud_db, one_year_ahead)
     assert w == 1.0
 
@@ -114,7 +114,7 @@ def test_decay_5y_matches_exp_minus_half(
 ) -> None:
     """5 years old -> exp(-0.5) ~ 0.6065. Exact dates float around
     leap-year math, so allow a small absolute tolerance."""
-    five_years_ago = dt.date.today() - dt.timedelta(days=5 * 365)
+    five_years_ago = dt.datetime.now(dt.UTC).date() - dt.timedelta(days=5 * 365)
     w = _decay_value(fraud_db, five_years_ago)
     expected = math.exp(-0.5)
     assert abs(w - expected) < 0.005, (w, expected)
@@ -123,7 +123,7 @@ def test_decay_5y_matches_exp_minus_half(
 def test_decay_10y_matches_exp_minus_one(
     fraud_db: psycopg.Connection,
 ) -> None:
-    ten_years_ago = dt.date.today() - dt.timedelta(days=10 * 365)
+    ten_years_ago = dt.datetime.now(dt.UTC).date() - dt.timedelta(days=10 * 365)
     w = _decay_value(fraud_db, ten_years_ago)
     expected = math.exp(-1.0)
     assert abs(w - expected) < 0.005, (w, expected)
@@ -132,7 +132,7 @@ def test_decay_10y_matches_exp_minus_one(
 def test_decay_20y_matches_exp_minus_two(
     fraud_db: psycopg.Connection,
 ) -> None:
-    twenty_years_ago = dt.date.today() - dt.timedelta(days=20 * 365)
+    twenty_years_ago = dt.datetime.now(dt.UTC).date() - dt.timedelta(days=20 * 365)
     w = _decay_value(fraud_db, twenty_years_ago)
     expected = math.exp(-2.0)
     assert abs(w - expected) < 0.01, (w, expected)
@@ -140,7 +140,7 @@ def test_decay_20y_matches_exp_minus_two(
 
 def test_decay_monotone_decreasing(fraud_db: psycopg.Connection) -> None:
     """Older excldate -> strictly smaller weight."""
-    today = dt.date.today()
+    today = dt.datetime.now(dt.UTC).date()
     weights = [
         _decay_value(fraud_db, today - dt.timedelta(days=365 * y))
         for y in (1, 5, 10, 20, 30)
@@ -203,7 +203,7 @@ def test_058_decays_old_excldate(fraud_db: psycopg.Connection) -> None:
     """A 10-year-old LEIE exclusion + $10K award should produce
     raw_value ~ 10000 * exp(-1.0) ~ 3679. Without decay this would
     be 10000."""
-    ten_years_ago = dt.date.today() - dt.timedelta(days=10 * 365)
+    ten_years_ago = dt.datetime.now(dt.UTC).date() - dt.timedelta(days=10 * 365)
     _seed_leie(fraud_db,
                record_hash="a" * 64,
                lastname="OLD", firstname="EXCLUDED",
@@ -238,7 +238,7 @@ def test_058_decay_pushes_below_threshold(
     """A 12-year-old $20K award decays to ~$6024, BELOW the
     $10K min_actionable_threshold. The L1 row should still be
     written (substrate honesty) but the L2 entity should drop."""
-    twelve_years_ago = dt.date.today() - dt.timedelta(days=12 * 365)
+    twelve_years_ago = dt.datetime.now(dt.UTC).date() - dt.timedelta(days=12 * 365)
     _seed_leie(fraud_db,
                record_hash="b" * 64,
                lastname="STALE", firstname="EXCLUSION",
@@ -313,7 +313,7 @@ def _seed_contribution_059(
 
 def test_059_decays_old_excldate(fraud_db: psycopg.Connection) -> None:
     """5-year-old LEIE exclusion + $1000 donation -> raw_value ~ $607."""
-    five_years_ago = dt.date.today() - dt.timedelta(days=5 * 365)
+    five_years_ago = dt.datetime.now(dt.UTC).date() - dt.timedelta(days=5 * 365)
     _seed_leie(fraud_db,
                record_hash="c" * 64,
                lastname="DECAYED", firstname="DONOR",
@@ -402,7 +402,7 @@ def test_060_per_donor_decay(fraud_db: psycopg.Connection) -> None:
       Donor #2 NEW,DONOR (exclusion today)  gives $1000 -> decays to $1000.
       Candidate-level sum_amt = ~$1368, NOT $2000.
     """
-    today = dt.date.today()
+    today = dt.datetime.now(dt.UTC).date()
     ten_years_ago = today - dt.timedelta(days=10 * 365)
 
     _seed_leie(fraud_db, record_hash="d" * 64,
@@ -462,7 +462,7 @@ def test_054_binary_decays_to_fraction(fraud_db: psycopg.Connection) -> None:
     it's the decay weight of the freshest match's excldate, in (0, 1].
 
     A 5-year-old exclusion -> raw_value ~ 0.61."""
-    five_years_ago = dt.date.today() - dt.timedelta(days=5 * 365)
+    five_years_ago = dt.datetime.now(dt.UTC).date() - dt.timedelta(days=5 * 365)
     _seed_leie(fraud_db,
                record_hash="f" * 64,
                lastname="HALF", firstname="DECAY",

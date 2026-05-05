@@ -95,7 +95,7 @@ def _seed_leie_individual(
     """
     import datetime as _dt
     if excldate is None:
-        excldate = _dt.date.today().strftime("%Y%m%d")
+        excldate = _dt.datetime.now(_dt.UTC).date().strftime("%Y%m%d")
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO raw.hhs_oig_leie ("
