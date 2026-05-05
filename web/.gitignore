@@ -1,0 +1,19 @@
+# --- Next.js / Node ---------------------------------------------------------
+node_modules/
+.next/
+out/
+.vercel/
+.turbo/
+
+# --- TypeScript -------------------------------------------------------------
+*.tsbuildinfo
+next-env.d.ts
+
+# --- Local env vars (never commit) ------------------------------------------
+.env
+.env.local
+.env.*.local
+
+# --- Editor / OS ------------------------------------------------------------
+.DS_Store
+*.swp
