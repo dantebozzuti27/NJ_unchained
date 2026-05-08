@@ -1,0 +1,108 @@
+---
+description: Every number on a screen, in an API response, or in a derived table must be traceable to a raw source row, a documented formula, and a versioned set of constants. No magic numbers. No hardcoded "vibes".
+alwaysApply: true
+---
+
+# Verifiable-data invariants (NON-NEGOTIABLE)
+
+The original `idea` spec (sections 1.3, 8.4, 10) and the README's
+"Methodological invariants" section make this binding for the entire
+platform. Every constraint below applies to every change, every PR,
+every script.
+
+## 1. No magic numbers anywhere a user (or auditor) can see them
+
+Any numeric constant that influences a metric, score, threshold, color,
+ranking, or display must be **either**:
+
+- (a) loaded from a versioned reference table (`ref.*` or
+  `derived.constants_*`) with `(constant_id, value, source_url,
+  source_vintage, formula_version, citation_text)`, **or**
+- (b) defined exactly once in code with a citation comment naming the
+  upstream authority (HUD, IRS, BLS, FHFA, NJ DCA, Census, etc.) and
+  the specific publication/section, **or**
+- (c) derived from raw data inside the same query.
+
+Bad:
+
+```ts
+if (ratio >= 1.4) return "STRESS";          // why 1.4? says who?
+const MORTGAGE_RATE = 0.0672;               // when? from where?
+const DOWN_PAYMENT = 0.20;                  // industry rule? Fed? made up?
+```
+
+Good:
+
+```ts
+// HUD cost-burden threshold: >30% of income on housing.
+// Source: HUD CHAS data documentation.
+// https://www.huduser.gov/portal/datasets/cp.html
+const HUD_COST_BURDEN_THRESHOLD = 0.30;
+
+// 30-yr fixed mortgage rate from FRED MORTGAGE30US, vintage stamped per query.
+const rate = await getFredObservation('MORTGAGE30US', asOfDate);
+
+// Down-payment assumption: 20% (idea spec §5.1).
+// Surfaced to the user as a "what-if" knob, default 0.20.
+const downPaymentPct = params.downPaymentPct ?? 0.20;
+```
+
+## 2. Every derived value carries provenance
+
+Per README §"Methodological invariants":
+
+- `raw.*` is loaded from sources unmodified.
+- `derived.*` rows carry `formula_version` + `source_vintage_hash`.
+- Every measured row carries `data_quality ∈ {'measured', 'computed', 'modeled'}`.
+- A given `(formula_version, source_vintage_hash)` always produces the
+  same `derived.*` row. Reproducibility is a CHECK, not a hope.
+
+When a new derived table is added, it MUST include these columns or
+inherit them from a versioned base. No exceptions.
+
+## 3. UI must surface the lineage
+
+For every number rendered to the user:
+
+- Hover/expand reveals: `source`, `vintage` (release date), `formula
+  version`, `data_quality`.
+- A "View sources" link goes to a per-page lineage table listing every
+  raw input row that contributed.
+
+## 4. Hardcoded color/threshold tables are reference data
+
+Color bins, tier cutoffs, severity ladders, peer-bucket bounds — these
+are reference data, not application constants. They live in
+`db/seeds/*.sql` or `ref.*` tables, not inline in `.tsx` or `.py`.
+
+If a tier band changes, that change is a migration with a
+`formula_version` bump. It is not a one-line edit in a component file.
+
+## 5. No silent interpolation, no silent imputation
+
+Per `idea` spec §8.3: "Never interpolate blindly. Mark gaps explicitly."
+
+- Missing data renders as "—" or "no data", never as a forward-filled value.
+- If imputation is necessary, it is a labeled `data_quality = 'modeled'`
+  row with the imputation method documented and versioned.
+- Cross-source validation (idea §8.1) and >15% YoY outlier detection
+  (idea §8.2) are CHECK constraints or asset checks, not optional.
+
+## 6. Free-tier constraint (AGENTS.md): $0/month, indefinitely
+
+Do not silently default to a paid service. If a feature requires paid
+infra, surface the cost trade-off and ask first.
+
+## 7. Anchor every metric to the `idea` spec
+
+Before adding a new metric, identify which `idea` section it
+implements (e.g. §5.4 Affordability Threshold Gap, §5.5 AEI). If a
+proposed metric is not in the `idea` spec, write a short rationale in
+`work_left.txt` justifying the addition before implementing it.
+
+## How to know when this rule applies
+
+- Adding any number to a `.tsx`, `.ts`, `.py`, or `.sql` file: this rule applies.
+- Writing a tier classifier or a color picker: this rule applies.
+- Computing any user-visible aggregate: this rule applies.
+- "It's just a default" — this rule still applies; defaults are visible.

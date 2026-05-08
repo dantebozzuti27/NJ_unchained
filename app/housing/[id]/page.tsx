@@ -51,12 +51,19 @@ export default async function CountyDetailPage({
 
   return (
     <div className="space-y-6">
-      <div>
+      <div className="flex items-center justify-between">
         <Link
           href="/housing"
           className="text-sm underline underline-offset-4 text-zinc-600 dark:text-zinc-400"
         >
           ← Back to housing overview
+        </Link>
+        <Link
+          href={`/housing/${encodeURIComponent(detail.county_id)}/collapse`}
+          className="rounded-md border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950 px-3 py-1.5 text-xs font-medium text-red-800 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900 transition-colors"
+          title="The Collapse Curve: actual median income vs income required to afford the median home"
+        >
+          View Collapse Curve →
         </Link>
       </div>
 
