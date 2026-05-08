@@ -397,3 +397,164 @@ def test_screener_detail_query_returns_indexed_series(burden_db: psycopg.Connect
     assert by_year[2010] == pytest.approx(100.0)
     # Bergen 2022 real income is engineered to be flat in real terms.
     assert by_year[2022] == pytest.approx(100.0, rel=5e-3)
+
+
+# ===========================================================================
+# Phase 6b: ZHVI + cross-source surface that powers the new dual-index
+# panel on /housing/[id]. The frontend's getCountyDetail() runs three
+# new queries (zhvi_series, cross_source paired-latest); we reissue them
+# byte-equivalent here against a synthetic FHFA + ZHVI panel.
+# ===========================================================================
+
+
+def _seed_zhvi_for_burden_test(conn: psycopg.Connection) -> None:
+    """Seed Zillow ZHVI 2010 + 2022 for Bergen + Middlesex, hand-anchored
+    so the cross-source divergence is mathematically exact.
+
+    Bergen   (34003): ZHVI 100 -> 165 by 2022 (+65%); FHFA grew 100->150 (+50%).
+                      ZHVI / FHFA at 2022 = 165/150 -> divergence = +10% of FHFA.
+    Middlesex (34023): ZHVI 100 -> 120 by 2022 (+20%); FHFA grew 100->120 (+20%).
+                       Perfect agreement -> divergence = 0.
+    """
+    # Insert 12 monthly observations of CONSTANT value per (fips, year)
+    # so derived.v_zhvi_county_annual returns AVG = the seed value
+    # exactly, no floating-point slop.
+    rows: list[tuple[str, str, int, float]] = []
+    for fips, name, val_2010, val_2022 in [
+        ("34003", "Bergen County",     400_000.0, 660_000.0),  # ZHVI ratio 1.65
+        ("34023", "Middlesex County",  300_000.0, 360_000.0),  # ZHVI ratio 1.20
+    ]:
+        for year, val in ((2010, val_2010), (2022, val_2022)):
+            rows.append((name, fips, year, val))
+
+    region_id = {"34003": 874, "34023": 2014}
+    with conn.cursor() as cur:
+        for region_name, fips, year, val in rows:
+            for month in range(1, 13):
+                import datetime as _dt
+                last_day = (
+                    _dt.date(year, month + 1, 1) if month < 12
+                    else _dt.date(year + 1, 1, 1)
+                ) - _dt.timedelta(days=1)
+                cur.execute(
+                    "INSERT INTO raw.zillow_zhvi_county "
+                    "  (region_id, county_fips, region_name, state_code, "
+                    "   metro, observation_month, zhvi, "
+                    "   source_url, source_sha256, source_vintage) "
+                    "VALUES (%s, %s, %s, 'NJ', 'NYC', %s, %s, "
+                    "        'http://test/zhvi', %s, 'test-vintage') "
+                    "ON CONFLICT DO NOTHING",
+                    (
+                        region_id[fips], fips, region_name,
+                        last_day, val, "0" * 64,
+                    ),
+                )
+    conn.commit()
+
+
+def test_zhvi_indexed_function_returns_expected_shape(
+    burden_db: psycopg.Connection,
+) -> None:
+    """derived.f_zhvi_county_indexed returns 100 at base_year by definition."""
+    _seed_zhvi_for_burden_test(burden_db)
+    cur = burden_db.execute(
+        "SELECT county_fips, year, zhvi_indexed::FLOAT8 "
+        "FROM derived.f_zhvi_county_indexed(%s::SMALLINT) "
+        "WHERE county_fips IN ('34003', '34023') "
+        "ORDER BY county_fips, year",
+        (BURDEN_BASE_YEAR,),
+    )
+    rows = cur.fetchall()
+    assert len(rows) == 4
+    by_key = {(r[0], int(r[1])): float(r[2]) for r in rows}
+    assert by_key[("34003", 2010)] == pytest.approx(100.0)
+    assert by_key[("34003", 2022)] == pytest.approx(165.0)
+    assert by_key[("34023", 2010)] == pytest.approx(100.0)
+    assert by_key[("34023", 2022)] == pytest.approx(120.0)
+
+
+def test_cross_source_paired_latest_query_returns_expected_divergence(
+    burden_db: psycopg.Connection,
+) -> None:
+    """Reissues the lib/housing.ts crossSourceRows query byte-equivalent.
+
+    Bergen 2022: FHFA=150, ZHVI=165 -> diff_pts = +15, diff_pct = 15/150 = +10.0%
+    Middlesex 2022: FHFA=120, ZHVI=120 -> diff_pts = 0, diff_pct = 0
+    """
+    _seed_zhvi_for_burden_test(burden_db)
+
+    sql_paired_latest = """
+        WITH paired AS (
+          SELECT
+            year::INT                                  AS year,
+            fhfa_hpi_indexed::FLOAT8                   AS fhfa_indexed,
+            zillow_zhvi_indexed::FLOAT8                AS zhvi_indexed,
+            divergence_indexed_points::FLOAT8          AS divergence_indexed_points,
+            divergence_pct_of_fhfa::FLOAT8             AS divergence_pct_of_fhfa
+          FROM derived.f_housing_index_cross_source(%(base)s::SMALLINT)
+          WHERE county_fips = %(fips)s
+            AND fhfa_hpi_indexed IS NOT NULL
+            AND zillow_zhvi_indexed IS NOT NULL
+        )
+        SELECT year, fhfa_indexed, zhvi_indexed,
+               divergence_indexed_points, divergence_pct_of_fhfa
+        FROM paired
+        ORDER BY year DESC
+        LIMIT 1
+    """
+
+    cur = burden_db.execute(
+        sql_paired_latest,
+        {"base": BURDEN_BASE_YEAR, "fips": "34003"},
+    )
+    bergen = cur.fetchone()
+    assert bergen is not None
+    year_b, fhfa_b, zhvi_b, diff_pts_b, diff_pct_b = bergen
+    assert int(year_b) == 2022
+    assert float(fhfa_b) == pytest.approx(150.0)
+    assert float(zhvi_b) == pytest.approx(165.0)
+    assert float(diff_pts_b) == pytest.approx(15.0)
+    assert float(diff_pct_b) == pytest.approx(0.10, abs=1e-4)
+
+    cur = burden_db.execute(
+        sql_paired_latest,
+        {"base": BURDEN_BASE_YEAR, "fips": "34023"},
+    )
+    mid = cur.fetchone()
+    assert mid is not None
+    year_m, fhfa_m, zhvi_m, diff_pts_m, diff_pct_m = mid
+    assert int(year_m) == 2022
+    assert float(fhfa_m) == pytest.approx(120.0)
+    assert float(zhvi_m) == pytest.approx(120.0)
+    assert float(diff_pts_m) == pytest.approx(0.0, abs=1e-4)
+    assert float(diff_pct_m) == pytest.approx(0.0, abs=1e-4)
+
+
+def test_cross_source_query_returns_no_rows_when_zhvi_missing(
+    burden_db: psycopg.Connection,
+) -> None:
+    """Without ZHVI seeded, the cross-source query returns 0 rows for the
+    county. This pins the substrate-honest fallback the frontend relies
+    on (cross_source = null when the substrate gap exists).
+    """
+    sql_paired_latest = """
+        WITH paired AS (
+          SELECT
+            year::INT                                  AS year,
+            fhfa_hpi_indexed::FLOAT8                   AS fhfa_indexed,
+            zillow_zhvi_indexed::FLOAT8                AS zhvi_indexed
+          FROM derived.f_housing_index_cross_source(%(base)s::SMALLINT)
+          WHERE county_fips = %(fips)s
+            AND fhfa_hpi_indexed IS NOT NULL
+            AND zillow_zhvi_indexed IS NOT NULL
+        )
+        SELECT year, fhfa_indexed, zhvi_indexed
+        FROM paired
+        ORDER BY year DESC
+        LIMIT 1
+    """
+    cur = burden_db.execute(
+        sql_paired_latest,
+        {"base": BURDEN_BASE_YEAR, "fips": "34003"},
+    )
+    assert cur.fetchone() is None

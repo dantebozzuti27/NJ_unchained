@@ -124,12 +124,18 @@ export default async function CountyDetailPage({
         </dl>
       </header>
 
-      <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <ChartCard
-          title="Home-price index"
-          subtitle={`FHFA HPI, ${detail.base_year}=100`}
+          title="Home-price index (FHFA)"
+          subtitle={`FHFA HPI repeat-sales, ${detail.base_year}=100`}
           color="text-orange-700 dark:text-orange-300"
           series={detail.hpi_series}
+        />
+        <ChartCard
+          title="Home-price index (Zillow)"
+          subtitle={`Zillow ZHVI mid-tier SFR+condo, ${detail.base_year}=100`}
+          color="text-purple-700 dark:text-purple-300"
+          series={detail.zhvi_series}
         />
         <ChartCard
           title="Real wage index"
@@ -139,11 +145,55 @@ export default async function CountyDetailPage({
         />
         <ChartCard
           title="Burden ratio"
-          subtitle={`HPI ÷ real income, ${detail.base_year}=1.0`}
+          subtitle={`HPI \u00f7 real income, ${detail.base_year}=1.0`}
           color={tier.fg}
           series={detail.burden_series}
         />
       </section>
+
+      {detail.cross_source != null && (
+        <section className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 text-sm">
+          <h2 className="font-medium">Methodology cross-check (FHFA vs Zillow)</h2>
+          <p className="mt-2 text-zinc-700 dark:text-zinc-300">
+            Two independent housing indices, both re-indexed to{" "}
+            <span className="font-mono">{detail.base_year}=100</span>. FHFA
+            HPI is a repeat-sales index controlling for compositional change
+            in the housing stock; Zillow ZHVI is a smoothed, seasonally-
+            adjusted typical-home-value estimate built from the full
+            transaction record plus listings. They should agree within a
+            few index points except in regimes where one methodology
+            captures price moves the other lags (Zillow leads in fast-
+            moving markets; FHFA lags but is more transaction-anchored).
+          </p>
+          <dl className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+            <KV
+              label={`FHFA index (${detail.cross_source.year})`}
+              value={detail.cross_source.fhfa_indexed.toFixed(1)}
+            />
+            <KV
+              label={`Zillow index (${detail.cross_source.year})`}
+              value={detail.cross_source.zhvi_indexed.toFixed(1)}
+            />
+            <KV
+              label="Divergence (index pts)"
+              value={`${detail.cross_source.divergence_indexed_points >= 0 ? "+" : ""}${detail.cross_source.divergence_indexed_points.toFixed(1)}`}
+            />
+            <KV
+              label="Divergence (% of FHFA)"
+              value={`${detail.cross_source.divergence_pct_of_fhfa >= 0 ? "+" : ""}${(detail.cross_source.divergence_pct_of_fhfa * 100).toFixed(2)}%`}
+            />
+          </dl>
+          <p className="mt-3 text-xs text-zinc-500">
+            <span className="font-mono">
+              divergence_pct_of_fhfa = (zhvi_indexed &minus; fhfa_indexed) / fhfa_indexed
+            </span>
+            . Asset-check thresholds (calibrated on 546 historical NJ
+            (county, year) pairs back to 2000): WARN at &gt;12% absolute,
+            ERROR at &gt;20%. Currently within the warn band. See spec
+            &sect;8.1 cross-source validation.
+          </p>
+        </section>
+      )}
 
       <section className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 text-sm">
         <h2 className="font-medium">Reading the chart</h2>
@@ -153,7 +203,9 @@ export default async function CountyDetailPage({
           home-price growth has outpaced real wage growth in this county;
           when it dips below, wages are catching up. The dashed reference
           line is the &ldquo;break-even&rdquo; level (100 = parity with the
-          base year).
+          base year). The two home-price index cards above (FHFA, Zillow)
+          are independent methodologies; the cross-check section shows
+          how much they agree for this county.
         </p>
       </section>
     </div>

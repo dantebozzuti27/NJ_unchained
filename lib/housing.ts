@@ -55,6 +55,13 @@ export type SeriesPoint = {
 export type CountyDetail = CountyRow & {
   base_year: number;
   hpi_series: SeriesPoint[];
+  /**
+   * Zillow ZHVI series re-indexed to base_year=100. Phase 6 substrate
+   * (raw.zillow_zhvi_county) joined annually via derived.f_zhvi_county_indexed.
+   * Independent of FHFA HPI; the two series together implement the
+   * spec §8.1 cross-source validation surface end-to-end.
+   */
+  zhvi_series: SeriesPoint[];
   income_series_real: SeriesPoint[];
   burden_series: SeriesPoint[];
   current: {
@@ -64,6 +71,20 @@ export type CountyDetail = CountyRow & {
     burden_ratio: number | null;
     median_income_real: number | null;
   };
+  /**
+   * Cross-source housing-index posture for the most recent year where
+   * BOTH FHFA HPI and Zillow ZHVI have data for this county. NULL when
+   * either source is missing for every joinable year.
+   */
+  cross_source: {
+    year: number;
+    fhfa_indexed: number;
+    zhvi_indexed: number;
+    /** zhvi_indexed - fhfa_indexed in index points (base = 100). */
+    divergence_indexed_points: number;
+    /** (zhvi_indexed - fhfa_indexed) / fhfa_indexed; signed. */
+    divergence_pct_of_fhfa: number;
+  } | null;
 };
 
 export async function listNjCounties(): Promise<CountyRow[]> {
@@ -222,6 +243,42 @@ export async function getCountyDetail(
     ORDER BY year
   `) as Record<string, unknown>[];
 
+  // Zillow ZHVI re-indexed to base_year=100 (Phase 6 substrate). The
+  // function emits one row per year where the county has ZHVI data;
+  // the underlying raw.zillow_zhvi_county is monthly so a year is
+  // emitted as soon as ANY month is loaded -- early years (2000-...)
+  // typically have <12 months because Zillow's coverage was bootstrapping.
+  const zhviRows = (await sql`
+    SELECT year::INT AS year, zhvi_indexed::FLOAT8 AS indexed
+    FROM derived.f_zhvi_county_indexed(${base}::SMALLINT)
+    WHERE county_fips = ${fips}
+    ORDER BY year
+  `) as Record<string, unknown>[];
+
+  // Cross-source posture: the latest year where BOTH FHFA HPI and ZHVI
+  // are populated for this county. We query this from the existing
+  // derived.f_housing_index_cross_source function so the UI shows
+  // exactly what the asset check sees.
+  const crossSourceRows = (await sql`
+    WITH paired AS (
+      SELECT
+        year::INT                                  AS year,
+        fhfa_hpi_indexed::FLOAT8                   AS fhfa_indexed,
+        zillow_zhvi_indexed::FLOAT8                AS zhvi_indexed,
+        divergence_indexed_points::FLOAT8          AS divergence_indexed_points,
+        divergence_pct_of_fhfa::FLOAT8             AS divergence_pct_of_fhfa
+      FROM derived.f_housing_index_cross_source(${base}::SMALLINT)
+      WHERE county_fips = ${fips}
+        AND fhfa_hpi_indexed IS NOT NULL
+        AND zillow_zhvi_indexed IS NOT NULL
+    )
+    SELECT year, fhfa_indexed, zhvi_indexed,
+           divergence_indexed_points, divergence_pct_of_fhfa
+    FROM paired
+    ORDER BY year DESC
+    LIMIT 1
+  `) as Record<string, unknown>[];
+
   const incomeRows = (await sql`
     WITH base_row AS (
       SELECT estimate_real AS base_income
@@ -245,10 +302,28 @@ export async function getCountyDetail(
     year: Number(r.year),
     indexed: Number(r.indexed),
   }));
+  const zhvi: SeriesPoint[] = zhviRows.map((r) => ({
+    year: Number(r.year),
+    indexed: Number(r.indexed),
+  }));
   const income: SeriesPoint[] = incomeRows.map((r) => ({
     year: Number(r.year),
     indexed: Number(r.indexed),
   }));
+  const crossSource =
+    crossSourceRows.length > 0
+      ? {
+          year: Number(crossSourceRows[0].year),
+          fhfa_indexed: Number(crossSourceRows[0].fhfa_indexed),
+          zhvi_indexed: Number(crossSourceRows[0].zhvi_indexed),
+          divergence_indexed_points: Number(
+            crossSourceRows[0].divergence_indexed_points,
+          ),
+          divergence_pct_of_fhfa: Number(
+            crossSourceRows[0].divergence_pct_of_fhfa,
+          ),
+        }
+      : null;
 
   // Burden series = HPI / income at years where both are present.
   const incomeByYear = new Map<number, number>();
@@ -285,6 +360,7 @@ export async function getCountyDetail(
     county_name: String(c.county_name),
     base_year: base,
     hpi_series: hpi,
+    zhvi_series: zhvi,
     income_series_real: income,
     burden_series: burden,
     current: {
@@ -299,6 +375,7 @@ export async function getCountyDetail(
         latest != null ? Number((latest.indexed / 100).toFixed(4)) : null,
       median_income_real: medianIncomeReal,
     },
+    cross_source: crossSource,
   };
 }
 
