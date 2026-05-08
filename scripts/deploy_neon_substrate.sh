@@ -231,6 +231,32 @@ with psycopg.connect(url, connect_timeout=20) as conn, conn.cursor() as cur:
     print(f"    f_housing_index_cross_source(2010): "
           f"{both} of {total} rows have BOTH FHFA + ZHVI loaded")
 
+    # Verifiable-data substrate (mig 080 / 081 / seeds 014 / 015): every
+    # platform constant and every tier band has provenance loaded.
+    cur.execute("""
+        SELECT constant_id, value::INT
+        FROM ref.platform_constants
+        WHERE constant_id IN ('burden_base_year', 'cross_source_base_year')
+        ORDER BY constant_id
+    """)
+    pc = cur.fetchall()
+    print(f"    ref.platform_constants:        {len(pc)} verifiable constant(s) loaded")
+    for cid, val in pc:
+        print(f"      {cid:<28} = {val}")
+
+    cur.execute("""
+        SELECT band_ord, label, lower_bound, upper_bound
+        FROM ref.tier_bands
+        WHERE tier_kind = 'burden_growth_ratio'
+        ORDER BY band_ord
+    """)
+    tb = cur.fetchall()
+    print(f"    ref.tier_bands burden_growth_ratio: {len(tb)} band(s) loaded")
+    for ord_, label, lo, hi in tb:
+        lo_s = "(-inf" if lo is None else f"[{float(lo):.2f}"
+        hi_s = "+inf)" if hi is None else f"{float(hi):.2f})"
+        print(f"      ord={ord_} {label:<10} {lo_s}, {hi_s}")
+
     cur.execute("""
         SELECT county_fips,
                round(fhfa_hpi_indexed::NUMERIC, 1) AS fhfa,
