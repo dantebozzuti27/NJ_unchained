@@ -1,7 +1,9 @@
 import Link from "next/link";
 
+import { CrossSourceAnnotationCallout } from "@/components/CrossSourceAnnotationCallout";
 import { FreshnessBadge } from "@/components/FreshnessBadge";
 import { Sparkline } from "@/components/Sparkline";
+import { getCrossSourceAnnotation } from "@/lib/cross-source-annotations";
 import { isDbReachable } from "@/lib/db";
 import { getPlatformFreshnessHeadline } from "@/lib/freshness";
 import {
@@ -40,6 +42,15 @@ export default async function CountyDetailPage({
     // Freshness is best-effort; missing migration must not break the page.
     getPlatformFreshnessHeadline().catch(() => null),
   ]);
+  // Annotation fetch is dependent on the cross_source slice of detail;
+  // best-effort so a missing mig 084 / seed 017 cannot break the page.
+  const annotation =
+    detail?.cross_source != null
+      ? await getCrossSourceAnnotation(
+          detail.county_fips,
+          detail.cross_source.year,
+        ).catch(() => null)
+      : null;
   if (!detail) {
     return (
       <div className="rounded-md border border-zinc-300 dark:border-zinc-700 p-6">
@@ -200,9 +211,20 @@ export default async function CountyDetailPage({
             </span>
             . Asset-check thresholds (calibrated on 546 historical NJ
             (county, year) pairs back to 2000): WARN at &gt;12% absolute,
-            ERROR at &gt;20%. Currently within the warn band. See spec
-            &sect;8.1 cross-source validation.
+            ERROR at &gt;20%, EXCEPT for documented methodology causes
+            recorded in{" "}
+            <code className="font-mono">
+              ref.cross_source_divergence_known_causes
+            </code>{" "}
+            (Phase 7b annotations). See spec &sect;8.1 cross-source
+            validation.
           </p>
+          {annotation && (
+            <CrossSourceAnnotationCallout
+              annotation={annotation}
+              year={detail.cross_source.year}
+            />
+          )}
         </section>
       )}
 
