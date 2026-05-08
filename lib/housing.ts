@@ -196,6 +196,32 @@ export type CountyDetail = CountyRow & {
     /** (zhvi_indexed - fhfa_indexed) / fhfa_indexed; signed. */
     divergence_pct_of_fhfa: number;
   } | null;
+  /**
+   * Real-dollar (CPI-deflated) affordability headline for the most
+   * recent year where the full housing-burden substrate is present
+   * (DCA property tax + ACS5 income + FRED MORTGAGE30US + tax brackets).
+   * NULL when any substrate is missing.
+   *
+   * VISION_2026 §3.4 — the spec-mandated real-dollar headline that
+   * replaces the unitless burden ratio as the primary signal.
+   * Sourced from derived.v_affordability_gap_real (mig 085).
+   */
+  real_dollar: {
+    year: number;
+    /** Real-dollar base year (latest year in derived.cpi_u_headline_annual). */
+    base_year: number;
+    /** Median home price for the county-year, in real dollars. */
+    home_price_real: number;
+    /** ACS5 median household income, in real dollars. */
+    median_income_real: number;
+    /** Annual PITI on the median home, in real dollars. */
+    piti_annual_real: number;
+    /** HUD's required income at PITI <= 30% of gross, in real dollars. */
+    required_income_hud_30pct_real: number;
+    /** median_income - required_income_hud_30pct, in real dollars.
+     *  Negative = household earns less than HUD threshold. THE headline. */
+    hud_headroom_dollars_real: number;
+  } | null;
 };
 
 export async function listNjCounties(): Promise<CountyRow[]> {
@@ -465,6 +491,47 @@ export async function getCountyDetail(
       ? Number(incomeNominalRows[0].v)
       : null;
 
+  // Real-dollar (CPI-deflated) affordability headline. Sourced from
+  // derived.v_affordability_gap_real (mig 085 / VISION_2026 §3.4).
+  // Picks the most recent (county, year) row where the FULL housing-
+  // burden substrate is present (DCA + ACS5 + FRED + tax brackets).
+  // NULL when any substrate is missing.
+  const realDollarRows = (await sql`
+    SELECT year::INT AS year,
+           real_dollar_base_year::INT AS base_year,
+           home_price_real::FLOAT8 AS home_price_real,
+           median_income_real::FLOAT8 AS median_income_real,
+           piti_annual_real::FLOAT8 AS piti_annual_real,
+           required_income_hud_30pct_real::FLOAT8
+                       AS required_income_hud_30pct_real,
+           hud_headroom_dollars_real::FLOAT8
+                       AS hud_headroom_dollars_real
+    FROM derived.v_affordability_gap_real
+    WHERE county_fips = ${fips}
+      AND home_price_real IS NOT NULL
+      AND median_income_real IS NOT NULL
+      AND required_income_hud_30pct_real IS NOT NULL
+    ORDER BY year DESC
+    LIMIT 1
+  `) as Record<string, unknown>[];
+
+  const realDollar =
+    realDollarRows.length > 0
+      ? {
+          year: Number(realDollarRows[0].year),
+          base_year: Number(realDollarRows[0].base_year),
+          home_price_real: Number(realDollarRows[0].home_price_real),
+          median_income_real: Number(realDollarRows[0].median_income_real),
+          piti_annual_real: Number(realDollarRows[0].piti_annual_real),
+          required_income_hud_30pct_real: Number(
+            realDollarRows[0].required_income_hud_30pct_real,
+          ),
+          hud_headroom_dollars_real: Number(
+            realDollarRows[0].hud_headroom_dollars_real,
+          ),
+        }
+      : null;
+
   return {
     county_id: String(c.county_id),
     county_fips: fips,
@@ -487,6 +554,7 @@ export async function getCountyDetail(
       median_income_real: medianIncomeReal,
     },
     cross_source: crossSource,
+    real_dollar: realDollar,
   };
 }
 

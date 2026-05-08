@@ -93,7 +93,7 @@ export default async function CountyDetailPage({
         <div className="flex flex-wrap gap-3 items-baseline justify-between">
           <div>
             <div className="text-xs uppercase tracking-wider text-zinc-500">
-              county / fips {detail.county_fips} / base year {detail.base_year}
+              county / fips {detail.county_fips}
             </div>
             <h1 className="mt-1 text-2xl font-semibold tracking-tight">
               {detail.county_name}
@@ -102,13 +102,29 @@ export default async function CountyDetailPage({
               {detail.county_id}
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <span
-              className={`rounded-full px-3 py-1 text-xs font-bold ${tier.bg} ${tier.fg}`}
-              title={tier.description}
-            >
-              {tier.label}
-            </span>
+          {detail.real_dollar != null ? (
+            <div className="text-right">
+              <div
+                className={`font-mono text-4xl font-bold leading-none ${
+                  detail.real_dollar.hud_headroom_dollars_real >= 0
+                    ? "text-blue-600 dark:text-blue-400"
+                    : "text-rose-600 dark:text-rose-400"
+                }`}
+              >
+                {detail.real_dollar.hud_headroom_dollars_real >= 0 ? "+" : "−"}
+                {fmtUsdShort(
+                  Math.abs(detail.real_dollar.hud_headroom_dollars_real),
+                )}
+              </div>
+              <div className="mt-1 text-xs uppercase tracking-wider text-zinc-500">
+                Affordability gap ({detail.real_dollar.year}, in{" "}
+                {detail.real_dollar.base_year} dollars)
+              </div>
+              <div className="mt-0.5 text-[11px] text-zinc-500">
+                median income − HUD-required income
+              </div>
+            </div>
+          ) : (
             <div className="text-right">
               <div className="font-mono text-3xl font-bold leading-none">
                 {detail.current.burden_ratio == null
@@ -118,32 +134,62 @@ export default async function CountyDetailPage({
               <div className="mt-0.5 text-xs uppercase tracking-wider text-zinc-500">
                 Burden ratio ({detail.current.year ?? "—"})
               </div>
+              <div className="mt-1 text-[10px] text-zinc-500">
+                Affordability gap unavailable (substrate gap)
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
-        <dl className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-          <KV
-            label="HPI growth (vs base)"
-            value={fmtFactor(detail.current.hpi_growth)}
-          />
-          <KV
-            label="Real income growth"
-            value={fmtFactor(detail.current.income_growth)}
-          />
-          <KV
-            label="Real median income (latest)"
-            value={fmtUsd(detail.current.median_income_real)}
-          />
-          <KV
-            label="Years observed"
-            value={
-              detail.burden_series.length === 0
-                ? "—"
-                : `${detail.burden_series.length} (${detail.burden_series[0].year}–${detail.burden_series.at(-1)!.year})`
-            }
-          />
-        </dl>
+        {detail.real_dollar != null && (
+          <dl className="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+            <KV
+              label={`Median home (${detail.real_dollar.base_year} $)`}
+              value={fmtUsd(detail.real_dollar.home_price_real)}
+            />
+            <KV
+              label={`Median income (${detail.real_dollar.base_year} $)`}
+              value={fmtUsd(detail.real_dollar.median_income_real)}
+            />
+            <KV
+              label={`Required income @30% (${detail.real_dollar.base_year} $)`}
+              value={fmtUsd(detail.real_dollar.required_income_hud_30pct_real)}
+            />
+            <KV
+              label={`Annual PITI (${detail.real_dollar.base_year} $)`}
+              value={fmtUsd(detail.real_dollar.piti_annual_real)}
+            />
+          </dl>
+        )}
+
+        <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-zinc-200 dark:border-zinc-800 pt-3 text-xs text-zinc-600 dark:text-zinc-400">
+          <span className="uppercase tracking-wider text-zinc-500">
+            Indexed view ({detail.base_year}=100)
+          </span>
+          <span
+            className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${tier.bg} ${tier.fg}`}
+            title={tier.description}
+          >
+            {tier.label}
+          </span>
+          <span className="font-mono">
+            burden ratio ={" "}
+            {detail.current.burden_ratio == null
+              ? "—"
+              : detail.current.burden_ratio.toFixed(2)}
+          </span>
+          <span className="opacity-70">·</span>
+          <span>
+            HPI {fmtFactor(detail.current.hpi_growth)} · income{" "}
+            {fmtFactor(detail.current.income_growth)}
+          </span>
+          <span className="opacity-70">·</span>
+          <span>
+            {detail.burden_series.length === 0
+              ? "no observations"
+              : `${detail.burden_series.length} years (${detail.burden_series[0].year}–${detail.burden_series.at(-1)!.year})`}
+          </span>
+        </div>
       </header>
 
       <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -309,5 +355,12 @@ function fmtFactor(x: number | null): string {
 
 function fmtUsd(n: number | null): string {
   if (n == null) return "—";
+  return `$${Math.round(n).toLocaleString("en-US")}`;
+}
+
+function fmtUsdShort(n: number): string {
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 10_000) return `$${(n / 1000).toFixed(1)}K`;
+  if (n >= 1000) return `$${(n / 1000).toFixed(2)}K`;
   return `$${Math.round(n).toLocaleString("en-US")}`;
 }
