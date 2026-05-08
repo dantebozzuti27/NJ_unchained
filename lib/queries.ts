@@ -22,6 +22,9 @@ import { getSql } from "./db";
 import type {
   EntityDetail,
   EntityKind,
+  EvidenceCard,
+  NjAnomalyCard,
+  NjFederalOfficial,
   PlatformStatus,
   RiskRow,
   SignalRow,
@@ -355,4 +358,233 @@ export async function getPlatformStatus(): Promise<PlatformStatus> {
     signal_count_by_family: family,
     vintage_iso: vintage,
   };
+}
+
+/**
+ * Sitting NJ federal incumbents (2 US Senators + 12 US Representatives).
+ * Reads derived.v_nj_federal_officials. Substrate-honesty: this view is
+ * federal-only; NJ Governor and state legislature live at NJ ELEC,
+ * scoped to the F8.5 ingester (deferred work item).
+ */
+export async function getNjFederalOfficials(
+  cycle: string,
+): Promise<NjFederalOfficial[]> {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT
+      cycle,
+      entity_id,
+      official_name,
+      office_code,
+      office_label,
+      office_district,
+      office_party,
+      incumbent_status,
+      election_year,
+      risk_score::FLOAT8 AS risk_score,
+      n_signals_fired::INT AS n_signals_fired,
+      COALESCE(signals_fired, ARRAY[]::TEXT[]) AS signals_fired,
+      max_severity::INT AS max_severity
+    FROM derived.v_nj_federal_officials
+    WHERE cycle = ${cycle}
+  `) as Record<string, unknown>[];
+
+  return rows.map((r) => ({
+    cycle: String(r.cycle),
+    entity_id: String(r.entity_id),
+    official_name: String(r.official_name),
+    office_code: String(r.office_code),
+    office_label: String(r.office_label),
+    office_district: r.office_district == null ? null : String(r.office_district),
+    office_party: r.office_party == null ? null : String(r.office_party),
+    incumbent_status: String(r.incumbent_status),
+    election_year: r.election_year == null ? null : Number(r.election_year),
+    risk_score: Number(r.risk_score),
+    n_signals_fired: Number(r.n_signals_fired),
+    signals_fired: Array.isArray(r.signals_fired)
+      ? (r.signals_fired as string[])
+      : [],
+    max_severity: Number(r.max_severity),
+  }));
+}
+
+/**
+ * Top-N most anomalous NJ-relevant entities for the /risk overview
+ * Section 2. One row per entity (DISTINCT ON entity_kind+entity_id),
+ * with the highest-severity firing signal selected as the preview to
+ * surface on the card. The user clicks through to /risk/[kind]/[id]
+ * to see all firing signals.
+ *
+ * Why aggregate v_entity_fraud_evidence rather than v_entity_fraud_risk:
+ * the evidence view already carries the is_nj flag (via raw.fec_*
+ * joins) AND the rendered plain-English preview text, so this is one
+ * query rather than three with extra JOINs.
+ */
+export async function listTopNjAnomalies(opts: {
+  cycle: string;
+  limit?: number;
+}): Promise<NjAnomalyCard[]> {
+  const sql = getSql();
+  const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
+  const rows = (await sql`
+    WITH deduped AS (
+      SELECT DISTINCT ON (entity_kind, entity_id)
+        cycle, entity_kind, entity_id,
+        display_name,
+        signal_id, severity, peer_percentile,
+        rendered_explanation,
+        citation_authority, citation_section,
+        office_code, office_district, office_party,
+        office_incumbent_status
+      FROM derived.v_entity_fraud_evidence
+      WHERE cycle = ${opts.cycle}
+        AND is_nj = TRUE
+      ORDER BY entity_kind, entity_id,
+               severity DESC NULLS LAST,
+               peer_percentile DESC NULLS LAST
+    )
+    SELECT
+      d.cycle,
+      d.entity_kind,
+      d.entity_id,
+      d.display_name,
+      d.signal_id                                  AS preview_signal_id,
+      d.severity::INT                              AS preview_severity,
+      d.peer_percentile::FLOAT8                    AS preview_peer_percentile,
+      d.rendered_explanation                       AS preview_explanation,
+      d.citation_authority                         AS preview_citation_authority,
+      d.citation_section                           AS preview_citation_section,
+      d.office_code, d.office_district, d.office_party,
+      d.office_incumbent_status,
+      COALESCE(r.risk_score, 0)::FLOAT8            AS risk_score,
+      COALESCE(r.n_signals_fired, 0)::INT          AS n_signals
+    FROM deduped d
+    LEFT JOIN derived.v_entity_fraud_risk r
+      ON  r.cycle = d.cycle
+      AND r.entity_kind = d.entity_kind
+      AND r.entity_id = d.entity_id
+    ORDER BY r.risk_score DESC NULLS LAST, d.severity DESC, d.entity_id ASC
+    LIMIT ${limit}
+  `) as Record<string, unknown>[];
+
+  return rows.map((r) => ({
+    cycle: String(r.cycle),
+    entity_kind: r.entity_kind as EntityKind,
+    entity_id: String(r.entity_id),
+    display_name: r.display_name == null ? null : String(r.display_name),
+    risk_score: Number(r.risk_score),
+    n_signals: Number(r.n_signals),
+    preview_signal_id: String(r.preview_signal_id),
+    preview_severity: Number(r.preview_severity),
+    preview_peer_percentile:
+      r.preview_peer_percentile == null
+        ? null
+        : Number(r.preview_peer_percentile),
+    preview_explanation: String(r.preview_explanation),
+    preview_citation_authority:
+      r.preview_citation_authority == null
+        ? null
+        : String(r.preview_citation_authority),
+    preview_citation_section:
+      r.preview_citation_section == null
+        ? null
+        : String(r.preview_citation_section),
+    office_code: r.office_code == null ? null : String(r.office_code),
+    office_district:
+      r.office_district == null ? null : String(r.office_district),
+    office_party: r.office_party == null ? null : String(r.office_party),
+    office_incumbent_status:
+      r.office_incumbent_status == null
+        ? null
+        : String(r.office_incumbent_status),
+  }));
+}
+
+/**
+ * Per-entity evidence cards for the /risk/[kind]/[id] detail page.
+ * Reads derived.v_entity_fraud_evidence; one row per firing signal.
+ * Each row carries a fully-rendered plain-English explanation, the
+ * federal-authority citation, severity precedent, and the upstream-
+ * verify URL the UI links out to.
+ */
+export async function getEntityEvidenceCards(opts: {
+  cycle: string;
+  kind: EntityKind;
+  id: string;
+}): Promise<EvidenceCard[]> {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT
+      cycle,
+      entity_kind,
+      entity_id,
+      signal_id,
+      raw_value::FLOAT8                  AS raw_value,
+      severity::INT                       AS severity,
+      peer_bucket,
+      peer_percentile::FLOAT8             AS peer_percentile,
+      is_nj,
+      display_name,
+      office_code, office_state, office_district,
+      office_party, office_incumbent_status,
+      rendered_explanation,
+      rule_text, citation_authority, citation_section, citation_url,
+      severity_basis, severity_precedent_url, severity_precedent_summary,
+      upstream_verify_url, upstream_verify_label, upstream_source
+    FROM derived.v_entity_fraud_evidence
+    WHERE cycle = ${opts.cycle}
+      AND entity_kind = ${opts.kind}
+      AND entity_id = ${opts.id}
+    ORDER BY severity DESC NULLS LAST,
+             peer_percentile DESC NULLS LAST,
+             signal_id ASC
+    LIMIT 100
+  `) as Record<string, unknown>[];
+
+  return rows.map((r) => ({
+    cycle: String(r.cycle),
+    entity_kind: r.entity_kind as EntityKind,
+    entity_id: String(r.entity_id),
+    signal_id: String(r.signal_id),
+    raw_value: r.raw_value == null ? null : Number(r.raw_value),
+    severity: Number(r.severity),
+    peer_bucket: r.peer_bucket == null ? null : String(r.peer_bucket),
+    peer_percentile:
+      r.peer_percentile == null ? null : Number(r.peer_percentile),
+    is_nj: Boolean(r.is_nj),
+    display_name: r.display_name == null ? null : String(r.display_name),
+    office_code: r.office_code == null ? null : String(r.office_code),
+    office_state: r.office_state == null ? null : String(r.office_state),
+    office_district:
+      r.office_district == null ? null : String(r.office_district),
+    office_party: r.office_party == null ? null : String(r.office_party),
+    office_incumbent_status:
+      r.office_incumbent_status == null
+        ? null
+        : String(r.office_incumbent_status),
+    rendered_explanation: String(r.rendered_explanation ?? ""),
+    rule_text: r.rule_text == null ? null : String(r.rule_text),
+    citation_authority:
+      r.citation_authority == null ? null : String(r.citation_authority),
+    citation_section:
+      r.citation_section == null ? null : String(r.citation_section),
+    citation_url: r.citation_url == null ? null : String(r.citation_url),
+    severity_basis:
+      r.severity_basis == null ? null : String(r.severity_basis),
+    severity_precedent_url:
+      r.severity_precedent_url == null
+        ? null
+        : String(r.severity_precedent_url),
+    severity_precedent_summary:
+      r.severity_precedent_summary == null
+        ? null
+        : String(r.severity_precedent_summary),
+    upstream_verify_url: String(r.upstream_verify_url ?? ""),
+    upstream_verify_label:
+      r.upstream_verify_label == null
+        ? null
+        : String(r.upstream_verify_label),
+    upstream_source:
+      r.upstream_source == null ? null : String(r.upstream_source),
+  }));
 }
