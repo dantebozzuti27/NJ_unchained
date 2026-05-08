@@ -369,13 +369,19 @@ def zhvi_yoy_outliers_plausible(
         "Cross-source housing-index divergence (Zillow ZHVI vs FHFA HPI, "
         "both re-indexed to 2010 = 100) for any NJ (county, latest-year) "
         "pair should fall within the historical envelope of "
-        "|divergence_pct_of_fhfa| <= 20%. Calibrated against 546 (NJ "
-        "county, year) pairs back to 2000 with empirical p99 = 11.38% "
-        "and max = 14.66% (Cape May 2001 / Passaic 2021). A divergence "
-        "above 20% is well beyond both the early-2000s thin-coverage "
-        "regime and the 2020-21 COVID run-up regime, both of which are "
-        "EXPLAINED divergences. Reads from "
-        "derived.f_housing_index_cross_source(2010)."
+        "|divergence_pct_of_fhfa| <= 20%, EXCEPT for documented "
+        "methodology causes recorded in "
+        "ref.cross_source_divergence_known_causes (VISION_2026 §8.1 "
+        "Phase 7b annotations: 2000-2002 ZHVI bootstrap, 2019-2022 "
+        "COVID repeat-sales lag, Hudson 2024+ urban-condo composition, "
+        "narrow Cumberland 2014-2015 and Salem 2005 development cycles). "
+        "Calibrated against 546 (NJ county, year) pairs back to 2000 "
+        "with empirical p99 = 11.38% and max = 14.66% (Cape May 2001 / "
+        "Passaic 2021), both annotated. The check now reads from "
+        "derived.v_cross_source_divergence_annotated and fires on "
+        "(a) UNANNOTATED divergences > 20% (ERROR) or 12-20% (WARN), or "
+        "(b) ANNOTATED divergences that EXCEED their documented "
+        "envelope (ERROR; the documented cause is no longer adequate)."
     ),
 )
 def housing_index_cross_source_divergence_plausible(
@@ -383,36 +389,48 @@ def housing_index_cross_source_divergence_plausible(
     pg: PgResource,
     governance: GovernanceWriter,
 ) -> AssetCheckResult:
-    """No NJ (county, latest-year) pair has |FHFA - ZHVI| divergence > 20%."""
+    """No NJ (county, latest-year) divergence is unexplained."""
     with pg.connect() as conn, conn.cursor() as cur:
-        # Latest year where BOTH sources have data for at least 1 NJ county
-        # (the join is INNER on the function output's WHERE clause).
         cur.execute("""
             WITH latest AS (
                 SELECT MAX(year) AS y
-                FROM derived.f_housing_index_cross_source(2010::SMALLINT)
+                FROM derived.v_cross_source_divergence_annotated
                 WHERE divergence_pct_of_fhfa IS NOT NULL
                   AND county_fips LIKE '34%'
             )
             SELECT
-                COUNT(*)                                            AS n_total,
-                COUNT(*) FILTER (WHERE ABS(divergence_pct_of_fhfa) > 0.20)
-                                                                    AS n_error,
-                COUNT(*) FILTER (WHERE ABS(divergence_pct_of_fhfa) > 0.12
+                COUNT(*)                                              AS n_total,
+                COUNT(*) FILTER (WHERE annotation_status = 'unannotated'
+                              AND ABS(divergence_pct_of_fhfa) > 0.20)
+                                                                      AS n_unannotated_error,
+                COUNT(*) FILTER (WHERE annotation_status = 'unannotated'
+                              AND ABS(divergence_pct_of_fhfa) > 0.12
                               AND ABS(divergence_pct_of_fhfa) <= 0.20)
-                                                                    AS n_warn,
-                MAX(ABS(divergence_pct_of_fhfa))                    AS max_abs_pct
-            FROM derived.f_housing_index_cross_source(2010::SMALLINT) x
+                                                                      AS n_unannotated_warn,
+                COUNT(*) FILTER (WHERE annotation_status =
+                                       'annotated_envelope_exceeded')
+                                                                      AS n_envelope_exceeded,
+                COUNT(*) FILTER (WHERE annotation_status =
+                                       'annotated_within_envelope')
+                                                                      AS n_within_envelope,
+                MAX(ABS(divergence_pct_of_fhfa))                      AS max_abs_pct
+            FROM derived.v_cross_source_divergence_annotated x
             JOIN latest l ON x.year = l.y
             WHERE x.county_fips LIKE '34%'
               AND x.divergence_pct_of_fhfa IS NOT NULL
         """)
         row = cur.fetchone()
-    n_total = int(row[0]) if row and row[0] is not None else 0
-    n_error = int(row[1]) if row and row[1] is not None else 0
-    n_warn = int(row[2]) if row and row[2] is not None else 0
-    max_abs = float(row[3]) if row and row[3] is not None else None
+    n_total            = int(row[0]) if row and row[0] is not None else 0
+    n_un_err           = int(row[1]) if row and row[1] is not None else 0
+    n_un_warn          = int(row[2]) if row and row[2] is not None else 0
+    n_envelope_exceed  = int(row[3]) if row and row[3] is not None else 0
+    n_within_envelope  = int(row[4]) if row and row[4] is not None else 0
+    max_abs            = float(row[5]) if row and row[5] is not None else None
 
+    # ERROR: unannotated > 20% OR any annotation envelope exceeded.
+    # WARN:  unannotated 12-20%.
+    # PASS:  no unannotated breaches and no annotation breaches.
+    n_error = n_un_err + n_envelope_exceed
     passed = n_error == 0
     severity = (
         AssetCheckSeverity.ERROR if n_error > 0
@@ -422,24 +440,30 @@ def housing_index_cross_source_divergence_plausible(
     _emit(governance, dataset_id="raw.zillow_zhvi_county",
           check_name="cross_source_divergence_plausible", passed=passed,
           details={
-              "n_total": n_total,
-              "n_error_over_20pct": n_error,
-              "n_warn_12_to_20pct": n_warn,
-              "max_abs_pct":        max_abs_f,
-              "envelope_warn":      "<= 12%",
-              "envelope_error":     "> 20%",
-              "base_year":          2010,
+              "n_total":              n_total,
+              "n_unannotated_error":  n_un_err,
+              "n_unannotated_warn":   n_un_warn,
+              "n_envelope_exceeded":  n_envelope_exceed,
+              "n_within_envelope":    n_within_envelope,
+              "max_abs_pct":          max_abs_f,
+              "envelope_warn":        "unannotated 12-20%",
+              "envelope_error":       "unannotated >20% OR annotation envelope exceeded",
+              "base_year":            2010,
+              "annotation_substrate": "ref.cross_source_divergence_known_causes",
           })
     return AssetCheckResult(
         passed=passed, severity=severity,
         metadata={
-            "n_total":            n_total,
-            "n_error_over_20pct": n_error,
-            "n_warn_12_to_20pct": n_warn,
-            "max_abs_pct":        max_abs_f,
-            "envelope_warn":      "<= 12%",
-            "envelope_error":     "> 20%",
-            "base_year":          2010,
+            "n_total":              n_total,
+            "n_unannotated_error":  n_un_err,
+            "n_unannotated_warn":   n_un_warn,
+            "n_envelope_exceeded":  n_envelope_exceed,
+            "n_within_envelope":    n_within_envelope,
+            "max_abs_pct":          max_abs_f,
+            "envelope_warn":        "unannotated 12-20%",
+            "envelope_error":       "unannotated >20% OR annotation envelope exceeded",
+            "base_year":            2010,
+            "annotation_substrate": "ref.cross_source_divergence_known_causes",
         },
     )
 

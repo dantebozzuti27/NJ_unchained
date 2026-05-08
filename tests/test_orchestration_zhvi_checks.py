@@ -400,8 +400,9 @@ def test_cross_source_divergence_passes_when_indices_agree(
     assert result.passed is True
     md = _unwrap_metadata(result)
     assert md["n_total"] == 1
-    assert md["n_error_over_20pct"] == 0
-    assert md["n_warn_12_to_20pct"] == 0
+    assert md["n_unannotated_error"] == 0
+    assert md["n_unannotated_warn"] == 0
+    assert md["n_envelope_exceeded"] == 0
     assert md["max_abs_pct"] == pytest.approx(0.0, abs=0.001)
 
 
@@ -427,8 +428,9 @@ def test_cross_source_divergence_warns_at_15pct_disagreement(
     assert result.passed is True   # 10% is below the 12% warn threshold
     md = _unwrap_metadata(result)
     assert md["n_total"] == 1
-    assert md["n_error_over_20pct"] == 0
-    assert md["n_warn_12_to_20pct"] == 0
+    assert md["n_unannotated_error"] == 0
+    assert md["n_unannotated_warn"] == 0
+    assert md["n_envelope_exceeded"] == 0
     # Divergence pct of FHFA = (165-150)/150 = 0.10
     assert md["max_abs_pct"] == pytest.approx(0.10, abs=0.001)
 
@@ -449,7 +451,8 @@ def test_cross_source_divergence_fails_when_30pct_disagreement(
     result = _run_check(housing_index_cross_source_divergence_plausible, zhvi_db)
     assert result.passed is False
     md = _unwrap_metadata(result)
-    assert md["n_error_over_20pct"] >= 1
+    # 2024 is unannotated for Bergen -> unannotated_error >= 1
+    assert md["n_unannotated_error"] >= 1
     assert md["max_abs_pct"] > 0.20
 
 
@@ -478,5 +481,211 @@ def test_cross_source_divergence_handles_partial_substrate(
     md = _unwrap_metadata(result)
     # Latest year with both = 2010 -> exactly 1 (county, year) pair, 0 divergence.
     assert md["n_total"] == 1
-    assert md["n_error_over_20pct"] == 0
+    assert md["n_unannotated_error"] == 0
     assert md["max_abs_pct"] == pytest.approx(0.0, abs=0.001)
+
+
+# ===========================================================================
+# Scenario E: Phase 7b annotation substrate -- documented divergences are
+#             SUPPRESSED (within envelope) or RE-FIRED (envelope exceeded).
+#
+# These tests pin the contract:
+#   * A documented (county, year_range, cause) annotation with envelope E
+#     suppresses the alarm when |divergence| <= E for that (county, year).
+#   * If the divergence EXCEEDS E, the check still fires with
+#     annotation_status = 'annotated_envelope_exceeded' counted into the
+#     ERROR bucket (the documented cause is no longer adequate).
+#   * The seeded blanket annotations (regimes A/B for 2000-2002 and
+#     2019-2022; Hudson 2024+; Cumberland 2014-2015; Salem 2005) are
+#     active out-of-the-box.
+# ===========================================================================
+
+
+def test_cross_source_annotation_suppresses_documented_2021_covid_lag(
+    zhvi_db: psycopg.Connection,
+) -> None:
+    """Passaic 2010=100/2021=181 vs FHFA 2010=100/2021=158 -> +14.56%
+    divergence. This is exactly the worst observed COVID-era lag in the
+    historical panel (Passaic 2021 = +14.58% in production). Without the
+    annotation it would WARN (12-20%). With the seeded methodology_lag
+    annotation (envelope 15%), it's suppressed to within_envelope.
+    """
+    _seed_full_year_zhvi(zhvi_db, "34031", "Passaic County", 2010, 350_000.0)
+    _seed_full_year_zhvi(zhvi_db, "34031", "Passaic County", 2021, 633_500.0)
+    _seed_fhfa_year(zhvi_db, "34031", 2010, 100.0)
+    _seed_fhfa_year(zhvi_db, "34031", 2021, 158.0)
+
+    from orchestration.asset_checks import (
+        housing_index_cross_source_divergence_plausible,
+    )
+
+    result = _run_check(housing_index_cross_source_divergence_plausible, zhvi_db)
+    assert result.passed is True
+    md = _unwrap_metadata(result)
+    # Divergence ~= (181 - 158) / 158 = 14.56% -- within 15% envelope
+    assert md["max_abs_pct"] > 0.13
+    assert md["max_abs_pct"] < 0.16
+    assert md["n_unannotated_error"] == 0
+    assert md["n_unannotated_warn"] == 0
+    assert md["n_envelope_exceeded"] == 0
+    assert md["n_within_envelope"] == 1
+
+
+def test_cross_source_annotation_refires_when_envelope_exceeded(
+    zhvi_db: psycopg.Connection,
+) -> None:
+    """Passaic 2021 is annotated with a 15% methodology_lag envelope. If
+    the divergence GROWS to 18% (e.g., a hypothetical future severe
+    shock that the documented lag envelope no longer absorbs), the check
+    must re-fire with status = 'annotated_envelope_exceeded' counted as
+    an ERROR. This is the substrate-honesty property: annotations
+    DOCUMENT the expected envelope, they do not silence alarms outside it.
+    """
+    _seed_full_year_zhvi(zhvi_db, "34031", "Passaic County", 2010, 350_000.0)
+    _seed_full_year_zhvi(zhvi_db, "34031", "Passaic County", 2021, 651_000.0)
+    _seed_fhfa_year(zhvi_db, "34031", 2010, 100.0)
+    _seed_fhfa_year(zhvi_db, "34031", 2021, 157.0)
+
+    from orchestration.asset_checks import (
+        housing_index_cross_source_divergence_plausible,
+    )
+
+    result = _run_check(housing_index_cross_source_divergence_plausible, zhvi_db)
+    md = _unwrap_metadata(result)
+    # Divergence ~= (186 - 157) / 157 = ~18.5% -- exceeds 15% envelope
+    assert md["max_abs_pct"] > 0.16
+    assert md["n_envelope_exceeded"] == 1
+    assert result.passed is False  # envelope_exceeded counts into ERROR
+
+
+def test_cross_source_annotation_does_not_suppress_unannotated_county_year(
+    zhvi_db: psycopg.Connection,
+) -> None:
+    """Bergen County 2024 has NO seeded annotation. A 22% divergence in
+    that year must fire ERROR -- the annotations only suppress the
+    documented (county, year_range) pairs.
+    """
+    _seed_full_year_zhvi(zhvi_db, "34003", "Bergen County", 2010, 400_000.0)
+    _seed_full_year_zhvi(zhvi_db, "34003", "Bergen County", 2024, 732_000.0)
+    _seed_fhfa_year(zhvi_db, "34003", 2010, 100.0)
+    _seed_fhfa_year(zhvi_db, "34003", 2024, 150.0)
+
+    from orchestration.asset_checks import (
+        housing_index_cross_source_divergence_plausible,
+    )
+
+    result = _run_check(housing_index_cross_source_divergence_plausible, zhvi_db)
+    md = _unwrap_metadata(result)
+    # Divergence ~= (183 - 150) / 150 = 22% -- exceeds the 20% threshold
+    assert md["max_abs_pct"] > 0.20
+    assert md["n_unannotated_error"] == 1
+    assert md["n_within_envelope"] == 0
+    assert result.passed is False
+
+
+def test_cross_source_hudson_2025_within_composition_envelope(
+    zhvi_db: psycopg.Connection,
+) -> None:
+    """Hudson 2025 has a 12% composition_change annotation (Hudson 2024+,
+    open-ended). A 10% divergence stays within envelope and is suppressed.
+    This is the regime that was the immediate motivator for the
+    annotation system (Hudson 2025 production divergence = -10.33%).
+    """
+    _seed_full_year_zhvi(zhvi_db, "34017", "Hudson County", 2010, 350_000.0)
+    _seed_full_year_zhvi(zhvi_db, "34017", "Hudson County", 2025, 525_000.0)
+    _seed_fhfa_year(zhvi_db, "34017", 2010, 100.0)
+    _seed_fhfa_year(zhvi_db, "34017", 2025, 167.0)
+
+    from orchestration.asset_checks import (
+        housing_index_cross_source_divergence_plausible,
+    )
+
+    result = _run_check(housing_index_cross_source_divergence_plausible, zhvi_db)
+    md = _unwrap_metadata(result)
+    # Divergence ~= (150 - 167) / 167 ~= -10.2% -- within 12% envelope
+    assert md["max_abs_pct"] > 0.09
+    assert md["max_abs_pct"] < 0.12
+    assert md["n_within_envelope"] == 1
+    assert md["n_envelope_exceeded"] == 0
+    assert result.passed is True
+
+
+def test_cross_source_hudson_2025_envelope_exceeded(
+    zhvi_db: psycopg.Connection,
+) -> None:
+    """If Hudson's composition gap WIDENS beyond its 12% envelope, the
+    check must re-fire. This pins the property that the Hudson
+    annotation envelope (12%, narrower than the 15% repeat-sales-lag
+    regimes) catches anomalies that the broader regimes would miss.
+    """
+    _seed_full_year_zhvi(zhvi_db, "34017", "Hudson County", 2010, 350_000.0)
+    _seed_full_year_zhvi(zhvi_db, "34017", "Hudson County", 2025, 504_000.0)
+    _seed_fhfa_year(zhvi_db, "34017", 2010, 100.0)
+    _seed_fhfa_year(zhvi_db, "34017", 2025, 170.0)
+
+    from orchestration.asset_checks import (
+        housing_index_cross_source_divergence_plausible,
+    )
+
+    result = _run_check(housing_index_cross_source_divergence_plausible, zhvi_db)
+    md = _unwrap_metadata(result)
+    # Divergence ~= (144 - 170) / 170 ~= -15.3% -- exceeds 12% envelope
+    assert md["max_abs_pct"] > 0.12
+    assert md["n_envelope_exceeded"] == 1
+    assert result.passed is False
+
+
+def test_cross_source_annotation_view_seeded_with_45_rows(
+    zhvi_db: psycopg.Connection,
+) -> None:
+    """The seeded ref.cross_source_divergence_known_causes must contain the
+    documented 21 + 21 + 1 + 1 + 1 = 45 annotations. Pins the seed shape.
+    """
+    with zhvi_db.cursor() as cur:
+        cur.execute("""
+            SELECT cause_category, COUNT(*) FROM
+            ref.cross_source_divergence_known_causes
+            GROUP BY cause_category ORDER BY cause_category
+        """)
+        rows = dict(cur.fetchall())
+    assert rows.get("parser_bootstrap") == 21
+    assert rows.get("methodology_lag") == 21
+    assert rows.get("composition_change") == 3  # Hudson + Cumberland + Salem
+
+
+def test_cross_source_annotation_envelope_must_be_non_negative(
+    zhvi_db: psycopg.Connection,
+) -> None:
+    """A future operator who tries to seed a negative envelope must hit
+    the cross_source_known_causes_envelope_chk constraint. Pins the
+    table-level guarantee against typos like '-0.15'.
+    """
+    import psycopg
+    with zhvi_db.cursor() as cur, pytest.raises(psycopg.errors.CheckViolation):
+        cur.execute(
+            "INSERT INTO ref.cross_source_divergence_known_causes "
+            "(county_fips, year_start, cause_category, description, "
+            " expected_max_abs_pct, source_citation) "
+            "VALUES ('34999', 2030, 'other', 'bad', -0.10, "
+            "        'http://test.example.com/should-fail')"
+        )
+    zhvi_db.rollback()
+
+
+def test_cross_source_annotation_citation_must_be_substantive(
+    zhvi_db: psycopg.Connection,
+) -> None:
+    """An empty or trivially-short source_citation must be rejected. The
+    annotation table requires PROVENANCE -- a 1-character string is not
+    a valid citation. Pins the cross_source_known_causes_citation_chk
+    constraint.
+    """
+    import psycopg
+    with zhvi_db.cursor() as cur, pytest.raises(psycopg.errors.CheckViolation):
+        cur.execute(
+            "INSERT INTO ref.cross_source_divergence_known_causes "
+            "(county_fips, year_start, cause_category, description, "
+            " expected_max_abs_pct, source_citation) "
+            "VALUES ('34999', 2030, 'other', 'bad', 0.10, 'short')"
+        )
+    zhvi_db.rollback()
