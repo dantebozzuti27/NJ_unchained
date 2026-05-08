@@ -1,8 +1,13 @@
 import Link from "next/link";
 
+import { FreshnessBadge } from "@/components/FreshnessBadge";
 import { Sparkline } from "@/components/Sparkline";
 import { isDbReachable } from "@/lib/db";
 import { fmtUsd } from "@/lib/format";
+import {
+  getPlatformFreshnessHeadline,
+  type PlatformFreshnessHeadline,
+} from "@/lib/freshness";
 import {
   burdenTier,
   getBurdenBaseYear,
@@ -46,13 +51,16 @@ export default async function HousingPage() {
   let headline: NjAffordabilityHeadline | null = null;
   let baseYear = 2010;
   let bands: TierBand[] = [];
+  let freshness: PlatformFreshnessHeadline | null = null;
   let err: string | null = null;
   try {
-    [rows, headline, baseYear, bands] = await Promise.all([
+    [rows, headline, baseYear, bands, freshness] = await Promise.all([
       listCountyBurden(),
       getNjAffordabilityHeadline(),
       getBurdenBaseYear(),
       getBurdenTierBands(),
+      // Freshness is best-effort: a missing migration must not break the page.
+      getPlatformFreshnessHeadline().catch(() => null),
     ]);
   } catch (e) {
     err = e instanceof Error ? e.message : String(e);
@@ -85,6 +93,9 @@ export default async function HousingPage() {
             21 NJ counties &middot; FHFA HPI &times; ACS5 income, base{" "}
             <span className="font-mono">{baseYear}=100</span>
           </span>
+          {freshness && (
+            <FreshnessBadge headline={freshness} variant="compact" />
+          )}
         </div>
         <p className="max-w-3xl text-sm text-zinc-600 dark:text-zinc-400">
           Each row compares home-price growth (FHFA HPI) to real wage growth

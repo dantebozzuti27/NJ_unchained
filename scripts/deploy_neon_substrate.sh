@@ -257,6 +257,38 @@ with psycopg.connect(url, connect_timeout=20) as conn, conn.cursor() as cur:
         hi_s = "+inf)" if hi is None else f"{float(hi):.2f})"
         print(f"      ord={ord_} {label:<10} {lo_s}, {hi_s}")
 
+    # Phase §7.1 freshness substrate (mig 082 / seed 016): per-source
+    # release_calendar joined against governance.v_latest_materialization.
+    # On a fresh deploy every source is 'never_materialized' (no health
+    # signals yet); the rollup overall_status will be PARTIAL. As Dagster
+    # runs accumulate, sources flip to 'fresh' and overall_status -> FRESH.
+    cur.execute("""
+        SELECT n_sources, n_fresh, n_stale, n_critical, n_never_materialized,
+               overall_status, worst_source_id, worst_status,
+               most_recent_materialization
+        FROM derived.v_platform_freshness_headline
+    """)
+    n_src, n_fr, n_st, n_cr, n_nv, ovr, wsid, wsst, last_mat = cur.fetchone()
+    print(f"    v_platform_freshness_headline:")
+    print(f"      {n_src} sources -- {n_fr} fresh, {n_st} stale, "
+          f"{n_cr} critical, {n_nv} never_materialized")
+    print(f"      overall_status = {ovr}; worst = {wsid or 'n/a'} "
+          f"({wsst or 'n/a'}); last_materialized = {last_mat or 'never'}")
+    cur.execute("""
+        SELECT source_id, freshness_status,
+               COALESCE(round(hours_since_materialized::NUMERIC, 1)::TEXT, '-')
+        FROM derived.v_data_freshness_summary
+        WHERE source_id IN (
+            'raw.fhfa_hpi_county','raw.zillow_zhvi_county',
+            'raw.acs_median_household_income','raw.cpi_u',
+            'raw.fred_observation','raw.nj_property_tax_county'
+        )
+        ORDER BY source_id
+    """)
+    print(f"    Per-source freshness for housing pillar:")
+    for src, status, hours in cur.fetchall():
+        print(f"      {src:<36} {status:<20} {hours}h ago")
+
     cur.execute("""
         SELECT county_fips,
                round(fhfa_hpi_indexed::NUMERIC, 1) AS fhfa,

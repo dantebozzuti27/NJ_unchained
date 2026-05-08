@@ -1,7 +1,9 @@
 import Link from "next/link";
 
+import { FreshnessBadge } from "@/components/FreshnessBadge";
 import { Sparkline } from "@/components/Sparkline";
 import { isDbReachable } from "@/lib/db";
+import { getPlatformFreshnessHeadline } from "@/lib/freshness";
 import {
   burdenTier,
   getBurdenTierBands,
@@ -32,9 +34,11 @@ export default async function CountyDetailPage({
   }
 
   const id = decodeURIComponent(rawId);
-  const [detail, bands] = await Promise.all([
+  const [detail, bands, freshness] = await Promise.all([
     getCountyDetail(id),
     getBurdenTierBands(),
+    // Freshness is best-effort; missing migration must not break the page.
+    getPlatformFreshnessHeadline().catch(() => null),
   ]);
   if (!detail) {
     return (
@@ -201,6 +205,8 @@ export default async function CountyDetailPage({
           </p>
         </section>
       )}
+
+      {freshness && <FreshnessBadge headline={freshness} variant="detail" />}
 
       <section className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 text-sm">
         <h2 className="font-medium">Reading the chart</h2>

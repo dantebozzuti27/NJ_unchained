@@ -583,6 +583,77 @@ def nj_proptax_county_coverage(
     )
 
 
+@asset_check(
+    asset=AssetKey(["raw", "nj_property_tax_county"]),
+    name="tax_substrate_prior_year_seeded",
+    description=(
+        "VISION_2026 §7.1 forcing function: BOTH ref.irs_federal_brackets and "
+        "ref.nj_state_brackets must include rows for tax year (current_year - 1) "
+        "by April 1 of (current_year). The IRS publishes its prior-year Rev. Proc. "
+        "constants in late October (one quarter before tax-filing season opens) "
+        "and the NJ Division of Taxation publishes the matching NJ-1040 tables in "
+        "January; April 1 is the deadline by which Phase-1 hand-transcribed seed "
+        "files (db/seeds/NNN_irs_federal_tax_<year>.sql, NNN_nj_state_tax_<year>.sql) "
+        "must be present for downstream affordability metrics (Collapse Curve, AEI, "
+        "/personalize) to evaluate the prior tax year. Before April 1 the absence "
+        "is grace-period; on or after April 1 the absence is a substrate-honesty "
+        "alarm. Severity is WARN, not ERROR: the engine returns NULL for unseeded "
+        "years (correct behavior) so the platform stays online; the check is the "
+        "polite forcing function that makes the gap visible to operators."
+    ),
+)
+def tax_substrate_prior_year_seeded(
+    context: AssetCheckExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> AssetCheckResult:
+    """Assert IRS + NJ tax-bracket seeds for (current_year - 1) are present.
+
+    The check is deliberately attached to raw.nj_property_tax_county because
+    that asset shares the same annual NJ-vintage publication semantics; the
+    tax-engine reference tables (ref.irs_federal_brackets, ref.nj_state_brackets)
+    are not Dagster assets in this platform (they are seed-loaded ref data).
+    Co-locating the check here preserves the one-asset-per-check contract while
+    capturing a cross-cutting platform health signal.
+    """
+    target_tax_year = _count(pg, """
+        SELECT EXTRACT(YEAR FROM CURRENT_DATE)::INT - 1
+    """)
+    deadline_passed = bool(_count(pg, """
+        SELECT (CURRENT_DATE >= make_date(EXTRACT(YEAR FROM CURRENT_DATE)::INT, 4, 1))::INT
+    """))
+    irs_rows = _count(pg, """
+        SELECT COUNT(*) FROM ref.irs_federal_brackets WHERE tax_year = %s
+    """, target_tax_year)
+    nj_rows = _count(pg, """
+        SELECT COUNT(*) FROM ref.nj_state_brackets WHERE tax_year = %s
+    """, target_tax_year)
+    irs_seeded = irs_rows > 0
+    nj_seeded = nj_rows > 0
+    both_seeded = irs_seeded and nj_seeded
+    if both_seeded:
+        passed, reason = True, "ok"
+    elif not deadline_passed:
+        passed, reason = True, "vacuous_pass_before_april_1_grace_period"
+    else:
+        passed, reason = False, "deadline_passed_with_missing_seeds"
+    details: dict[str, Any] = {
+        "target_tax_year": target_tax_year,
+        "deadline_passed_april_1": deadline_passed,
+        "irs_federal_rows": irs_rows,
+        "nj_state_rows": nj_rows,
+        "irs_seeded": irs_seeded,
+        "nj_seeded": nj_seeded,
+        "reason": reason,
+    }
+    _emit(governance, dataset_id="raw.nj_property_tax_county",
+          check_name="tax_substrate_prior_year_seeded", passed=passed,
+          details=details)
+    return AssetCheckResult(
+        passed=passed, severity=AssetCheckSeverity.WARN, metadata=details,
+    )
+
+
 # ============================================================================
 # raw.acs_pums_person + raw.acs_pums_housing
 # ============================================================================
@@ -2921,6 +2992,8 @@ ALL_ASSET_CHECKS = [
     acs_housing_nj_coverage,
     lca_row_count_positive,
     nj_proptax_county_coverage,
+    # VISION_2026 §7.1 forcing function for hand-transcribed tax-table backfill
+    tax_substrate_prior_year_seeded,
     pums_person_row_count_positive,
     pums_person_nj_puma_coverage,
     pums_replicate_weights_cardinality,
