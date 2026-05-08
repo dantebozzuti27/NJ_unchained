@@ -276,11 +276,11 @@ export async function runPersonalizationEngine(
     `,
     sql`
       SELECT
-        federal::FLOAT8       AS federal,
-        nj_state::FLOAT8      AS nj_state,
-        fica::FLOAT8          AS fica,
-        total_tax::FLOAT8     AS total_tax,
-        effective_rate::FLOAT8 AS effective_rate
+        federal_income_tax::FLOAT8  AS federal,
+        nj_state_tax::FLOAT8        AS nj_state,
+        fica_tax::FLOAT8            AS fica,
+        total_tax::FLOAT8           AS total_tax,
+        effective_rate::FLOAT8      AS effective_rate
       FROM derived.f_household_taxes(
         ${profile.gross_income}::NUMERIC,
         ${profile.gross_income}::NUMERIC,
