@@ -321,7 +321,9 @@ def test_treasurer_concentration_emits_to_treasurer_entity(
 def test_committee_address_clusters_emits_to_address_entity(
     fraud_db: psycopg.Connection,
 ) -> None:
-    """address-clusters entity_id concatenates address_canonical + state."""
+    """address-clusters entity_id is a 4-tuple address|city|state|zip5
+    (migration 087 fix; matches the source view's GROUP BY grain so
+    zip+4 noise can never produce PK collisions)."""
     _seed_engineered_anomalies(fraud_db)
     _run_dispatcher(fraud_db)
 
@@ -337,9 +339,17 @@ def test_committee_address_clusters_emits_to_address_entity(
     assert len(rows) == 1
     kind, eid, raw, sev, bucket = rows[0]
     assert kind == "address"
-    # The fixture has one address (PO BOX 99) hosting three committees
-    assert eid.startswith("PO BOX 99|")
-    assert eid.endswith("|NJ")
+    parts = eid.split("|")
+    assert len(parts) == 4, (
+        f"entity_id must be address|city|state|zip5 (4-tuple); got {eid!r}"
+    )
+    addr, city, state, zip5 = parts
+    assert addr == "PO BOX 99"
+    assert city == "TRENTON"
+    assert state == "NJ"
+    assert zip5.isdigit() and len(zip5) <= 5, (
+        f"zip5 segment must be at most 5 digits; got {zip5!r}"
+    )
     assert int(raw) == 3
     assert sev == 4
     assert bucket == "state=NJ"
