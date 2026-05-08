@@ -61,6 +61,18 @@ export async function listTopRiskEntities(opts: {
   // committee). The other entity kinds (treasurer, donor, etc.)
   // don't have a separate name table; their entity_id IS the name.
   // The COALESCE chain picks the first non-null label.
+  //
+  // Two derived columns (n_contributing_families, distinct
+  // signal_families) are computed from the view's own parallel-aligned
+  // (signal_families, peer_percentiles) arrays via unnest. The view does
+  // NOT expose n_contributing_families as a column -- that count lives
+  // only inside derived.fraud_risk_score(...) as a local plpgsql
+  // variable for the diversity-bonus arithmetic. Computing it here from
+  // arrays the view DOES expose keeps the per-row cost at zero I/O and
+  // matches the contributing-threshold semantics the score formula uses
+  // (peer_percentile >= 0.95). signal_families is also distinct'ed for
+  // display because the raw column is parallel-aligned with signals_fired
+  // (one entry per fired signal, NOT a deduplicated set).
   const rows = kind
     ? await sql`
         SELECT
@@ -69,14 +81,18 @@ export async function listTopRiskEntities(opts: {
           r.entity_id,
           COALESCE(cand.cand_name, cmte.cmte_nm, NULL) AS display_name,
           r.risk_score::FLOAT8 AS risk_score,
-          r.n_contributing_families::INT AS n_contributing_families,
-          r.signal_families,
-          (
-            SELECT COUNT(*)::INT FROM derived.fraud_signal_observation o
-            WHERE o.cycle = r.cycle
-              AND o.entity_kind = r.entity_kind
-              AND o.entity_id = r.entity_id
-          ) AS n_signals
+          COALESCE((
+            SELECT COUNT(DISTINCT fam)::INT
+            FROM unnest(r.signal_families, r.peer_percentiles) AS u(fam, pct)
+            WHERE pct >= ${CONTRIB_THRESHOLD}
+              AND fam IS NOT NULL
+          ), 0) AS n_contributing_families,
+          COALESCE((
+            SELECT array_agg(DISTINCT fam ORDER BY fam)
+            FROM unnest(r.signal_families) AS u(fam)
+            WHERE fam IS NOT NULL
+          ), ARRAY[]::TEXT[]) AS signal_families,
+          r.n_signals_fired::INT AS n_signals
         FROM derived.v_entity_fraud_risk r
         LEFT JOIN raw.fec_candidate cand
           ON r.entity_kind = 'candidate'
@@ -98,14 +114,18 @@ export async function listTopRiskEntities(opts: {
           r.entity_id,
           COALESCE(cand.cand_name, cmte.cmte_nm, NULL) AS display_name,
           r.risk_score::FLOAT8 AS risk_score,
-          r.n_contributing_families::INT AS n_contributing_families,
-          r.signal_families,
-          (
-            SELECT COUNT(*)::INT FROM derived.fraud_signal_observation o
-            WHERE o.cycle = r.cycle
-              AND o.entity_kind = r.entity_kind
-              AND o.entity_id = r.entity_id
-          ) AS n_signals
+          COALESCE((
+            SELECT COUNT(DISTINCT fam)::INT
+            FROM unnest(r.signal_families, r.peer_percentiles) AS u(fam, pct)
+            WHERE pct >= ${CONTRIB_THRESHOLD}
+              AND fam IS NOT NULL
+          ), 0) AS n_contributing_families,
+          COALESCE((
+            SELECT array_agg(DISTINCT fam ORDER BY fam)
+            FROM unnest(r.signal_families) AS u(fam)
+            WHERE fam IS NOT NULL
+          ), ARRAY[]::TEXT[]) AS signal_families,
+          r.n_signals_fired::INT AS n_signals
         FROM derived.v_entity_fraud_risk r
         LEFT JOIN raw.fec_candidate cand
           ON r.entity_kind = 'candidate'
@@ -153,8 +173,17 @@ export async function getEntityDetail(opts: {
       r.entity_id,
       COALESCE(cand.cand_name, cmte.cmte_nm, NULL) AS display_name,
       r.risk_score::FLOAT8 AS risk_score,
-      r.n_contributing_families::INT AS n_contributing_families,
-      r.signal_families
+      COALESCE((
+        SELECT COUNT(DISTINCT fam)::INT
+        FROM unnest(r.signal_families, r.peer_percentiles) AS u(fam, pct)
+        WHERE pct >= ${CONTRIB_THRESHOLD}
+          AND fam IS NOT NULL
+      ), 0) AS n_contributing_families,
+      COALESCE((
+        SELECT array_agg(DISTINCT fam ORDER BY fam)
+        FROM unnest(r.signal_families) AS u(fam)
+        WHERE fam IS NOT NULL
+      ), ARRAY[]::TEXT[]) AS signal_families
     FROM derived.v_entity_fraud_risk r
     LEFT JOIN raw.fec_candidate cand
       ON r.entity_kind = 'candidate'
