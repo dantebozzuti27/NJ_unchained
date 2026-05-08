@@ -76,6 +76,7 @@ from ingestion import (
     hhs_oig_leie,
     nj_dca_property_tax,
     usaspending,
+    zillow_zhvi,
 )
 from ingestion._base import IngestError
 from ingestion.census_acs_income import VintageNotPublishedError
@@ -103,6 +104,15 @@ BLS_FRESHNESS = FreshnessPolicy.time_window(
 )
 FHFA_FRESHNESS = FreshnessPolicy.time_window(
     fail_window=dt.timedelta(days=100), warn_window=dt.timedelta(days=92),
+)
+# Zillow ZHVI: monthly cadence; the public CSV's HTTP Last-Modified
+# header has historically slipped by 2-7 days past the calendar
+# month-end (e.g. 2026-04-16 release for the 2026-03-31 observation
+# month). 45 / 35 day envelope absorbs that publication slip without
+# triggering spurious warns; a 60-day fail window lights up if Zillow
+# misses two consecutive monthly releases.
+ZHVI_FRESHNESS = FreshnessPolicy.time_window(
+    fail_window=dt.timedelta(days=60),  warn_window=dt.timedelta(days=45),
 )
 ACS_FRESHNESS = FreshnessPolicy.time_window(
     fail_window=dt.timedelta(days=420), warn_window=dt.timedelta(days=380),
@@ -433,6 +443,67 @@ def raw_fhfa_hpi_county(
         "rows_upserted":  MetadataValue.int(n),
         "source_vintage": MetadataValue.text(parsed.source_vintage),
         "source_sha256":  MetadataValue.text(parsed.source_sha256),
+    })
+
+
+# ============================================================================
+# RAW ASSET 3b: raw.zillow_zhvi_county (Phase 6)
+# ============================================================================
+
+
+@asset(
+    key=AssetKey(["raw", "zillow_zhvi_county"]),
+    description=(
+        "Zillow ZHVI county-level monthly typical home value (mid-tier "
+        "single-family + condo, smoothed, seasonally adjusted). Second "
+        "independent housing index alongside FHFA HPI; substrate for "
+        "spec §8.1 cross-source validation via "
+        "derived.f_housing_index_cross_source(base_year)."
+    ),
+    group_name="house_prices",
+    freshness_policy=ZHVI_FRESHNESS,
+    compute_kind="python",
+)
+def raw_zillow_zhvi_county(
+    context: AssetExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> MaterializeResult:
+    """Re-download Zillow's county ZHVI CSV and refresh raw.zillow_zhvi_county.
+
+    The CSV is ~13 MiB and updated monthly. Zillow republishes the full
+    history every release; cheaper to re-download than to track
+    incremental changes.
+    """
+    fetched = zillow_zhvi.fetch_zhvi_county_csv(
+        dest_dir=Path("data/manual/zillow_zhvi"), overwrite=True,
+    )
+    parsed = zillow_zhvi.parse_zhvi_county_csv(
+        fetched.path,
+        sha256=fetched.sha256,
+        last_modified=fetched.last_modified,
+    )
+    staged = zillow_zhvi.stage_dataframe(parsed)
+    with pg.connect() as conn:
+        n = zillow_zhvi.load_to_postgres(staged, conn)
+        conn.commit()
+
+    _emit_materialized(governance, dataset_id="raw.zillow_zhvi_county",
+                       rows_upserted=n,
+                       extra={"source_vintage":      parsed.source_vintage,
+                              "source_sha256":       parsed.source_sha256,
+                              "source_modified_at":  (
+                                  parsed.source_modified_at.isoformat()
+                                  if parsed.source_modified_at else None
+                              ),
+                              "n_counties":          parsed.n_counties,
+                              "n_observations":      parsed.n_observations})
+    return MaterializeResult(metadata={
+        "rows_upserted":     MetadataValue.int(n),
+        "source_vintage":    MetadataValue.text(parsed.source_vintage),
+        "source_sha256":     MetadataValue.text(parsed.source_sha256),
+        "n_counties":        MetadataValue.int(parsed.n_counties),
+        "n_observations":    MetadataValue.int(parsed.n_observations),
     })
 
 
@@ -3054,6 +3125,7 @@ ALL_ASSETS = [
     raw_fred_observation,
     raw_cpi_u,
     raw_fhfa_hpi_county,
+    raw_zillow_zhvi_county,
     raw_acs_median_household_income,
     raw_acs_housing,
     raw_lca_disclosure,

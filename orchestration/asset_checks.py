@@ -43,9 +43,18 @@ _NJ_COUNTY_COUNT = 21
 
 
 def _count(pg: PgResource, query: str, *args: object) -> int:
-    """Run a single-int aggregation query; return the integer result."""
+    """Run a single-int aggregation query; return the integer result.
+
+    psycopg3 treats any non-None args (including an empty tuple) as a
+    request for parameter substitution, which makes literal ``%`` in
+    queries like ``LIKE '34%'`` raise ProgrammingError. Skip the args
+    path entirely when no params are passed so literal ``%`` survives.
+    """
     with pg.connect() as conn, conn.cursor() as cur:
-        cur.execute(query, args)
+        if args:
+            cur.execute(query, args)
+        else:
+            cur.execute(query)
         row = cur.fetchone()
         return int(row[0]) if row else 0
 
@@ -158,6 +167,279 @@ def fhfa_nj_county_coverage(
         metadata={
             "nj_counties_in_latest_year": n,
             "expected": _NJ_COUNTY_COUNT,
+        },
+    )
+
+
+# ============================================================================
+# raw.zillow_zhvi_county (Phase 6) + cross-source divergence vs FHFA HPI
+#
+# CALIBRATION NOTE -- 2026-05-08, against Neon production substrate.
+#
+# Empirical distributions over 546 (NJ county, year) pairs that have
+# both FHFA HPI and ZHVI loaded back to 2000-01-31 (re-indexed to
+# 2010 = 100):
+#
+#   |divergence_pct_of_fhfa|  p50=2.97%  p75=5.24%  p90=7.14%
+#                            p95=8.55%  p99=11.38% max=14.66%
+#
+#   ZHVI YoY annual growth   p01=-9.79%  p50=+3.94%  p99=+20.73%
+#                            min=-14.55% max=+22.56%
+#
+# The current real-world outliers exceeding 10% absolute cross-source
+# divergence are concentrated in two real-economy regimes:
+#
+#   * Early 2000s (2000-2002) -- ZHVI's coverage was bootstrapping in
+#     thinner counties (Cape May, Camden); FHFA had thin transaction
+#     counts in the same counties; both methodologies were noisier in
+#     this window than later periods.
+#
+#   * 2020-2021 COVID housing run-up -- ZHVI captured the rapid price
+#     run-up faster than FHFA's repeat-sales lag (Passaic +14.58%,
+#     Salem +12.17%, Atlantic +11.28% all in 2021).
+#
+# Both regimes are EXPLAINED divergences, not data bugs. Therefore the
+# asset-check thresholds below are calibrated to fire only on values
+# WELL OUTSIDE historical bounds:
+#
+#   - cross_source_divergence_plausible: ERROR if any (NJ county,
+#     latest-year) pair exceeds 20% absolute (about 1.4x the historical
+#     max); WARN if any exceeds 12% (about p99 + 0.6pp). Operator
+#     interpretation: "this is genuinely outside normal."
+#
+#   - zhvi_yoy_outliers_plausible: ERROR if any NJ (county, latest-year)
+#     pair exceeds +30% or falls below -20% (about 1.3x the historical
+#     extremes). WARN if outside [-15%, +25%] (~ historical [min, max]
+#     with a 0.5pp safety margin). The 2008-2009 housing crash hit -14.55%;
+#     the 2021 run-up hit +22.56%; +30% / -20% would be a larger move
+#     than either cyclical extreme.
+# ============================================================================
+
+
+@asset_check(
+    asset=AssetKey(["raw", "zillow_zhvi_county"]),
+    name="row_count_positive",
+    description="raw.zillow_zhvi_county must have at least one row.",
+)
+def zhvi_row_count_positive(
+    context: AssetCheckExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> AssetCheckResult:
+    """Confirm raw.zillow_zhvi_county has at least one row."""
+    n = _count(pg, "SELECT COUNT(*) FROM raw.zillow_zhvi_county")
+    passed = n > 0
+    _emit(governance, dataset_id="raw.zillow_zhvi_county",
+          check_name="row_count_positive", passed=passed, details={"row_count": n})
+    return AssetCheckResult(
+        passed=passed, severity=AssetCheckSeverity.ERROR,
+        metadata={"row_count": n},
+    )
+
+
+@asset_check(
+    asset=AssetKey(["raw", "zillow_zhvi_county"]),
+    name="nj_county_coverage",
+    description=(
+        "raw.zillow_zhvi_county must include all 21 NJ counties for the "
+        "most recent observation_month present in the table. ZHVI publishes "
+        "every county every month, so a partial coverage in the latest "
+        "month indicates either a parser failure on a county-row or a "
+        "schema change at Zillow that dropped a column."
+    ),
+)
+def zhvi_nj_county_coverage(
+    context: AssetCheckExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> AssetCheckResult:
+    """Confirm raw.zillow_zhvi_county covers all 21 NJ counties in the latest month."""
+    n = _count(pg, """
+        SELECT COUNT(DISTINCT z.county_fips)
+        FROM raw.zillow_zhvi_county z
+        WHERE z.county_fips LIKE '34%'
+          AND z.observation_month = (
+              SELECT MAX(observation_month) FROM raw.zillow_zhvi_county
+              WHERE county_fips LIKE '34%'
+          )
+    """)
+    passed = n == _NJ_COUNTY_COUNT
+    _emit(governance, dataset_id="raw.zillow_zhvi_county",
+          check_name="nj_county_coverage", passed=passed,
+          details={"nj_counties_in_latest_month": n,
+                   "expected": _NJ_COUNTY_COUNT})
+    return AssetCheckResult(
+        passed=passed,
+        severity=AssetCheckSeverity.ERROR,
+        metadata={
+            "nj_counties_in_latest_month": n,
+            "expected": _NJ_COUNTY_COUNT,
+        },
+    )
+
+
+@asset_check(
+    asset=AssetKey(["raw", "zillow_zhvi_county"]),
+    name="zhvi_yoy_outliers_plausible",
+    description=(
+        "Year-over-year ZHVI annual-mean growth for any NJ (county, "
+        "latest-year) pair should fall within the historical envelope of "
+        "[-20%, +30%]. Calibrated against 546 (NJ county, year) pairs "
+        "2000-2025 with empirical [min, max] = [-14.55%, +22.56%]. A YoY "
+        "swing outside [-20%, +30%] would be a larger move than either "
+        "the 2008-09 housing crash or the 2021 COVID run-up, and most "
+        "likely indicates a parser bug, a wide/long melt error, or an "
+        "undocumented Zillow schema change that mis-attributed a column "
+        "to the wrong year."
+    ),
+)
+def zhvi_yoy_outliers_plausible(
+    context: AssetCheckExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> AssetCheckResult:
+    """No NJ (county, latest-year) pair has YoY ZHVI growth outside [-20%, +30%]."""
+    with pg.connect() as conn, conn.cursor() as cur:
+        cur.execute("""
+            WITH latest AS (
+                SELECT MAX(year) AS y
+                FROM derived.v_zhvi_county_annual
+                WHERE county_fips LIKE '34%' AND n_months >= 6
+            ),
+            yoy AS (
+                SELECT a.county_fips, a.year,
+                       (a.zhvi_annual_mean - p.zhvi_annual_mean)
+                       / p.zhvi_annual_mean AS yoy_pct
+                FROM derived.v_zhvi_county_annual a
+                JOIN derived.v_zhvi_county_annual p
+                  ON p.county_fips = a.county_fips AND p.year = a.year - 1
+                JOIN latest l ON a.year = l.y
+                WHERE a.county_fips LIKE '34%'
+            )
+            SELECT
+                COUNT(*)                                          AS n_total,
+                COUNT(*) FILTER (WHERE yoy_pct > 0.30
+                              OR yoy_pct < -0.20)                 AS n_error,
+                COUNT(*) FILTER (WHERE (yoy_pct > 0.25 AND yoy_pct <= 0.30)
+                              OR (yoy_pct < -0.15 AND yoy_pct >= -0.20)) AS n_warn,
+                MIN(yoy_pct)                                      AS yoy_min,
+                MAX(yoy_pct)                                      AS yoy_max
+            FROM yoy
+        """)
+        row = cur.fetchone()
+    n_total = int(row[0]) if row and row[0] is not None else 0
+    n_error = int(row[1]) if row and row[1] is not None else 0
+    n_warn = int(row[2]) if row and row[2] is not None else 0
+    yoy_min = float(row[3]) if row and row[3] is not None else None
+    yoy_max = float(row[4]) if row and row[4] is not None else None
+
+    passed = n_error == 0
+    severity = (
+        AssetCheckSeverity.ERROR if n_error > 0
+        else AssetCheckSeverity.WARN
+    )
+    yoy_min_f = yoy_min if yoy_min is not None else float("nan")
+    yoy_max_f = yoy_max if yoy_max is not None else float("nan")
+    _emit(governance, dataset_id="raw.zillow_zhvi_county",
+          check_name="zhvi_yoy_outliers_plausible", passed=passed,
+          details={
+              "n_total": n_total, "n_error": n_error, "n_warn": n_warn,
+              "yoy_min": yoy_min_f, "yoy_max": yoy_max_f,
+              "envelope_warn":  "[-15%, +25%]",
+              "envelope_error": "[-20%, +30%]",
+          })
+    return AssetCheckResult(
+        passed=passed, severity=severity,
+        metadata={
+            "n_total":        n_total,
+            "n_error":        n_error,
+            "n_warn":         n_warn,
+            "yoy_min":        yoy_min_f,
+            "yoy_max":        yoy_max_f,
+            "envelope_warn":  "[-15%, +25%]",
+            "envelope_error": "[-20%, +30%]",
+        },
+    )
+
+
+@asset_check(
+    asset=AssetKey(["raw", "zillow_zhvi_county"]),
+    name="cross_source_divergence_plausible",
+    description=(
+        "Cross-source housing-index divergence (Zillow ZHVI vs FHFA HPI, "
+        "both re-indexed to 2010 = 100) for any NJ (county, latest-year) "
+        "pair should fall within the historical envelope of "
+        "|divergence_pct_of_fhfa| <= 20%. Calibrated against 546 (NJ "
+        "county, year) pairs back to 2000 with empirical p99 = 11.38% "
+        "and max = 14.66% (Cape May 2001 / Passaic 2021). A divergence "
+        "above 20% is well beyond both the early-2000s thin-coverage "
+        "regime and the 2020-21 COVID run-up regime, both of which are "
+        "EXPLAINED divergences. Reads from "
+        "derived.f_housing_index_cross_source(2010)."
+    ),
+)
+def housing_index_cross_source_divergence_plausible(
+    context: AssetCheckExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> AssetCheckResult:
+    """No NJ (county, latest-year) pair has |FHFA - ZHVI| divergence > 20%."""
+    with pg.connect() as conn, conn.cursor() as cur:
+        # Latest year where BOTH sources have data for at least 1 NJ county
+        # (the join is INNER on the function output's WHERE clause).
+        cur.execute("""
+            WITH latest AS (
+                SELECT MAX(year) AS y
+                FROM derived.f_housing_index_cross_source(2010::SMALLINT)
+                WHERE divergence_pct_of_fhfa IS NOT NULL
+                  AND county_fips LIKE '34%'
+            )
+            SELECT
+                COUNT(*)                                            AS n_total,
+                COUNT(*) FILTER (WHERE ABS(divergence_pct_of_fhfa) > 0.20)
+                                                                    AS n_error,
+                COUNT(*) FILTER (WHERE ABS(divergence_pct_of_fhfa) > 0.12
+                              AND ABS(divergence_pct_of_fhfa) <= 0.20)
+                                                                    AS n_warn,
+                MAX(ABS(divergence_pct_of_fhfa))                    AS max_abs_pct
+            FROM derived.f_housing_index_cross_source(2010::SMALLINT) x
+            JOIN latest l ON x.year = l.y
+            WHERE x.county_fips LIKE '34%'
+              AND x.divergence_pct_of_fhfa IS NOT NULL
+        """)
+        row = cur.fetchone()
+    n_total = int(row[0]) if row and row[0] is not None else 0
+    n_error = int(row[1]) if row and row[1] is not None else 0
+    n_warn = int(row[2]) if row and row[2] is not None else 0
+    max_abs = float(row[3]) if row and row[3] is not None else None
+
+    passed = n_error == 0
+    severity = (
+        AssetCheckSeverity.ERROR if n_error > 0
+        else AssetCheckSeverity.WARN
+    )
+    max_abs_f = max_abs if max_abs is not None else float("nan")
+    _emit(governance, dataset_id="raw.zillow_zhvi_county",
+          check_name="cross_source_divergence_plausible", passed=passed,
+          details={
+              "n_total": n_total,
+              "n_error_over_20pct": n_error,
+              "n_warn_12_to_20pct": n_warn,
+              "max_abs_pct":        max_abs_f,
+              "envelope_warn":      "<= 12%",
+              "envelope_error":     "> 20%",
+              "base_year":          2010,
+          })
+    return AssetCheckResult(
+        passed=passed, severity=severity,
+        metadata={
+            "n_total":            n_total,
+            "n_error_over_20pct": n_error,
+            "n_warn_12_to_20pct": n_warn,
+            "max_abs_pct":        max_abs_f,
+            "envelope_warn":      "<= 12%",
+            "envelope_error":     "> 20%",
+            "base_year":          2010,
         },
     )
 
@@ -2630,6 +2912,11 @@ ALL_ASSET_CHECKS = [
     fred_row_count_positive,
     cpi_row_count_positive,
     fhfa_nj_county_coverage,
+    # ZHVI (Phase 6) + cross-source vs FHFA (Phase 7)
+    zhvi_row_count_positive,
+    zhvi_nj_county_coverage,
+    zhvi_yoy_outliers_plausible,
+    housing_index_cross_source_divergence_plausible,
     acs_income_nj_coverage,
     acs_housing_nj_coverage,
     lca_row_count_positive,
