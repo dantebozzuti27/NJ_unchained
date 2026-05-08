@@ -21,6 +21,7 @@
 import { getSql } from "./db";
 import type {
   EntityDetail,
+  EntityHeaderInfo,
   EntityKind,
   EvidenceCard,
   NjAnomalyCard,
@@ -498,6 +499,138 @@ export async function listTopNjAnomalies(opts: {
         ? null
         : String(r.office_incumbent_status),
   }));
+}
+
+/**
+ * Bare entity metadata for the /risk/[kind]/[id] header. Used when the
+ * entity has no observations (clean incumbent, etc.) so the page can
+ * render a substrate-honest "no signals firing" state instead of 404.
+ *
+ * Looks the entity up in raw.fec_candidate / raw.fec_committee. For
+ * treasurer + address kinds the entity_id IS the human-readable label,
+ * so we synthesize the row without a join.
+ */
+export async function getEntityHeader(opts: {
+  cycle: string;
+  kind: EntityKind;
+  id: string;
+}): Promise<EntityHeaderInfo | null> {
+  const sql = getSql();
+  const { cycle, kind, id } = opts;
+
+  if (kind === "candidate") {
+    const rows = (await sql`
+      SELECT
+        cycle,
+        cand_id            AS entity_id,
+        cand_name          AS display_name,
+        cand_office        AS office_code,
+        cand_office_st     AS office_state,
+        cand_office_district AS office_district,
+        cand_pty_affiliation AS office_party,
+        cand_ici           AS office_incumbent_status,
+        (cand_office_st = 'NJ') AS is_nj
+      FROM raw.fec_candidate
+      WHERE cycle = ${cycle} AND cand_id = ${id}
+      LIMIT 1
+    `) as Record<string, unknown>[];
+    if (rows.length === 0) return null;
+    const r = rows[0];
+    return {
+      cycle: String(r.cycle),
+      entity_kind: "candidate",
+      entity_id: String(r.entity_id),
+      display_name: r.display_name == null ? null : String(r.display_name),
+      is_nj: Boolean(r.is_nj),
+      office_code: r.office_code == null ? null : String(r.office_code),
+      office_state: r.office_state == null ? null : String(r.office_state),
+      office_district:
+        r.office_district == null ? null : String(r.office_district),
+      office_party: r.office_party == null ? null : String(r.office_party),
+      office_incumbent_status:
+        r.office_incumbent_status == null
+          ? null
+          : String(r.office_incumbent_status),
+    };
+  }
+
+  if (kind === "committee") {
+    const rows = (await sql`
+      SELECT
+        cycle,
+        cmte_id      AS entity_id,
+        cmte_nm      AS display_name,
+        (cmte_st = 'NJ') AS is_nj
+      FROM raw.fec_committee
+      WHERE cycle = ${cycle} AND cmte_id = ${id}
+      LIMIT 1
+    `) as Record<string, unknown>[];
+    if (rows.length === 0) return null;
+    const r = rows[0];
+    return {
+      cycle: String(r.cycle),
+      entity_kind: "committee",
+      entity_id: String(r.entity_id),
+      display_name: r.display_name == null ? null : String(r.display_name),
+      is_nj: Boolean(r.is_nj),
+      office_code: null,
+      office_state: null,
+      office_district: null,
+      office_party: null,
+      office_incumbent_status: null,
+    };
+  }
+
+  if (kind === "treasurer") {
+    const rows = (await sql`
+      SELECT
+        ${cycle}::CHAR(4) AS cycle,
+        ${id}::TEXT AS entity_id,
+        ${id}::TEXT AS display_name,
+        EXISTS (
+          SELECT 1 FROM raw.fec_committee c
+          WHERE c.cycle = ${cycle}
+            AND UPPER(TRIM(c.tres_nm)) = UPPER(TRIM(${id}))
+            AND c.cmte_st = 'NJ'
+        ) AS is_nj
+    `) as Record<string, unknown>[];
+    const r = rows[0];
+    return {
+      cycle: String(r.cycle),
+      entity_kind: "treasurer",
+      entity_id: String(r.entity_id),
+      display_name: String(r.display_name),
+      is_nj: Boolean(r.is_nj),
+      office_code: null,
+      office_state: null,
+      office_district: null,
+      office_party: null,
+      office_incumbent_status: null,
+    };
+  }
+
+  if (kind === "address") {
+    // Address entity_id format: "address|city|state|zip5"
+    const parts = id.split("|");
+    const [addr, city, state, zip] = [parts[0], parts[1], parts[2], parts[3]];
+    const display = [addr, city, state, zip]
+      .filter((s) => s && s.length > 0)
+      .join(" ");
+    return {
+      cycle,
+      entity_kind: "address",
+      entity_id: id,
+      display_name: display || id,
+      is_nj: state === "NJ",
+      office_code: null,
+      office_state: state ?? null,
+      office_district: null,
+      office_party: null,
+      office_incumbent_status: null,
+    };
+  }
+
+  return null;
 }
 
 /**

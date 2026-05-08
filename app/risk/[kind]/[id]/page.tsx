@@ -5,11 +5,12 @@ import { isDbReachable } from "@/lib/db";
 import {
   getEntityDetail,
   getEntityEvidenceCards,
+  getEntityHeader,
   isValidKind,
   resolveDefaultCycle,
 } from "@/lib/queries";
 import { fmtScore, riskTier } from "@/lib/format";
-import type { EvidenceCard } from "@/lib/types";
+import type { EntityHeaderInfo, EvidenceCard } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -74,17 +75,38 @@ export default async function EntityDetailPage({
   }
   const cycle = search.cycle ?? (await resolveDefaultCycle());
 
-  const [detail, cards] = await Promise.all([
+  // Header source priority:
+  //   1. evidence-card row (richest metadata when signals fire)
+  //   2. v_entity_fraud_risk row (signals fired but the evidence-card
+  //      JOIN missed -- shouldn't happen but is defensive)
+  //   3. raw.fec_candidate / raw.fec_committee (clean entities -- the
+  //      most common case for sitting incumbents who pass every signal).
+  // If none of the three find the entity, render the explicit
+  // "entity not found" surface.
+  const [detail, cards, header] = await Promise.all([
     getEntityDetail({ cycle, kind, id }),
     getEntityEvidenceCards({ cycle, kind, id }),
+    getEntityHeader({ cycle, kind, id }),
   ]);
 
-  // Header context: prefer rich evidence-card metadata (display name,
-  // office context, NJ flag) when at least one observation exists; fall
-  // back to fec_candidate/committee join for entities with no signals.
   const headerCard = cards[0];
+  const headerSource: EntityHeaderInfo | null =
+    headerCard != null
+      ? {
+          cycle: headerCard.cycle,
+          entity_kind: headerCard.entity_kind,
+          entity_id: headerCard.entity_id,
+          display_name: headerCard.display_name,
+          is_nj: headerCard.is_nj,
+          office_code: headerCard.office_code,
+          office_state: headerCard.office_state,
+          office_district: headerCard.office_district,
+          office_party: headerCard.office_party,
+          office_incumbent_status: headerCard.office_incumbent_status,
+        }
+      : header;
 
-  if (!detail && !headerCard) {
+  if (!detail && !headerSource) {
     return (
       <div className="space-y-3">
         <div className="rounded-md border border-zinc-300 dark:border-zinc-700 p-6">
@@ -106,9 +128,10 @@ export default async function EntityDetailPage({
 
   const score = detail?.risk_score ?? 0;
   const tier = riskTier(score);
-  const displayName = headerCard?.display_name ?? detail?.display_name ?? id;
-  const isNj = headerCard?.is_nj ?? false;
-  const office = headerCard ? formatOfficeContext(headerCard) : null;
+  const displayName =
+    headerSource?.display_name ?? detail?.display_name ?? id;
+  const isNj = headerSource?.is_nj ?? false;
+  const office = headerSource ? formatOfficeContext(headerSource) : null;
 
   return (
     <div className="space-y-6">
@@ -381,28 +404,28 @@ function Methodology() {
   );
 }
 
-function formatOfficeContext(card: EvidenceCard): {
+function formatOfficeContext(info: EntityHeaderInfo): {
   label: string;
   party: string | null;
 } | null {
-  if (!card.office_code) return null;
-  const party = card.office_party ?? null;
-  if (card.office_code === "S") {
+  if (!info.office_code) return null;
+  const party = info.office_party ?? null;
+  if (info.office_code === "S") {
     return {
-      label: `U.S. Senate (${card.office_state ?? "?"}, ${
-        card.office_incumbent_status === "I" ? "incumbent" : "candidate"
+      label: `U.S. Senate (${info.office_state ?? "?"}, ${
+        info.office_incumbent_status === "I" ? "incumbent" : "candidate"
       })`,
       party,
     };
   }
-  if (card.office_code === "H") {
-    const dist = card.office_district?.replace(/^0/, "") ?? "?";
+  if (info.office_code === "H") {
+    const dist = info.office_district?.replace(/^0/, "") ?? "?";
     return {
-      label: `U.S. House ${card.office_state ?? ""}-${dist} (${
-        card.office_incumbent_status === "I" ? "incumbent" : "candidate"
+      label: `U.S. House ${info.office_state ?? ""}-${dist} (${
+        info.office_incumbent_status === "I" ? "incumbent" : "candidate"
       })`,
       party,
     };
   }
-  return { label: card.office_code, party };
+  return { label: info.office_code, party };
 }

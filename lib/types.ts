@@ -94,6 +94,29 @@ export interface EvidenceCard {
 }
 
 /**
+ * Bare entity metadata used to render the /risk/[kind]/[id] header when
+ * the entity has NO firing signals (clean incumbent, etc.). One row
+ * pulled from raw.fec_candidate / raw.fec_committee / decoded directly
+ * from entity_id for treasurer + address kinds. The detail page reads
+ * this when both v_entity_fraud_risk and v_entity_fraud_evidence are
+ * empty for the entity, so the user clicking a green-check incumbent
+ * from the roster sees a substrate-honest "no signals firing" page
+ * rather than a 404.
+ */
+export interface EntityHeaderInfo {
+  cycle: string;
+  entity_kind: EntityKind;
+  entity_id: string;
+  display_name: string | null;
+  is_nj: boolean;
+  office_code: string | null;
+  office_state: string | null;
+  office_district: string | null;
+  office_party: string | null;
+  office_incumbent_status: string | null;
+}
+
+/**
  * Preview card for a single NJ-relevant anomalous entity, used by the
  * /risk overview page Section 2. Aggregates over v_entity_fraud_evidence
  * (filtering is_nj=TRUE), picking the highest-severity firing signal as
