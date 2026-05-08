@@ -775,6 +775,144 @@ export async function getCountyDisposableIncome(
   };
 }
 
+/** ============================================================================
+ * NJ-statewide affordability headline (powers the landing page).
+ *
+ * Single round-trip that, for the most recent year where ALL FOUR substrates
+ * (DCA property tax + ACS5 income + FRED mortgage rate + IRS/NJ tax brackets)
+ * exist, returns one row per NJ county with the income gap a representative
+ * MFJ-1-1 household faces against the HUD 30%-of-gross threshold (idea §5.4).
+ *
+ * The page composes a headline like "In 2024, X of 21 NJ counties' median
+ * households need an extra $Y per year to afford their county's median home"
+ * directly from these rows, so every number on the front door is verifiable
+ * against `derived.v_affordability_gap` and the cited substrate.
+ * ========================================================================= */
+
+export type CountyHeadlineRow = CountyRow & {
+  latest_year: number;
+  home_price: number | null;
+  median_income: number | null;
+  required_income: number | null;
+  /** median_income - required_income; <0 means median household can't afford. */
+  headroom: number | null;
+  /** required_income / median_income; >1 means median is short. */
+  required_ratio: number | null;
+};
+
+export type NjAffordabilityHeadline = {
+  latest_year: number | null;
+  total_counties: number;
+  counties_with_data: number;
+  /** headroom < 0 (median household earns less than HUD-required income). */
+  counties_unaffordable: number;
+  /** headroom < -$25K of annual gross. Substrate-honest "severe" cutoff. */
+  counties_severely_unaffordable: number;
+  /** AVG(headroom) across counties with data, in $. */
+  avg_headroom: number | null;
+  /** AVG(median income) across counties with data, in $. */
+  avg_median_income: number | null;
+  /** AVG(required income) across counties with data, in $. */
+  avg_required_income: number | null;
+  /** Counties sorted ascending by headroom (worst affordability first). */
+  rows: CountyHeadlineRow[];
+};
+
+/**
+ * Fetches the per-county headroom for the latest year where every substrate
+ * is present, plus aggregate counts the landing-page hero renders directly.
+ *
+ * Returns `latest_year = null` and zero counts when the substrate is empty
+ * (the landing page falls back to a "not yet hydrated" message in that case).
+ */
+export async function getNjAffordabilityHeadline(): Promise<NjAffordabilityHeadline> {
+  const sql = getSql();
+
+  const rows = (await sql`
+    WITH global_latest AS (
+      SELECT MAX(g.year)::INT AS y
+      FROM derived.v_affordability_gap g
+      JOIN ref.county c
+        ON c.county_fips = g.county_fips
+       AND c.state_code = 'NJ'
+      WHERE g.median_income_nominal IS NOT NULL
+        AND g.required_income_hud_30pct IS NOT NULL
+    ),
+    nj AS (
+      SELECT county_id, county_fips, name AS county_name
+      FROM ref.county
+      WHERE state_code = 'NJ'
+    )
+    SELECT
+      n.county_id,
+      n.county_fips,
+      n.county_name,
+      gl.y::INT                                    AS latest_year,
+      g.home_price::FLOAT8                         AS home_price,
+      g.median_income_nominal::FLOAT8              AS median_income,
+      g.required_income_hud_30pct::FLOAT8          AS required_income,
+      g.hud_headroom_dollars::FLOAT8               AS headroom,
+      g.hud_required_to_actual_ratio::FLOAT8       AS required_ratio
+    FROM global_latest gl
+    CROSS JOIN nj n
+    LEFT JOIN derived.v_affordability_gap g
+      ON g.county_fips = n.county_fips
+     AND g.year = gl.y
+    ORDER BY g.hud_headroom_dollars ASC NULLS LAST, n.county_name ASC
+  `) as Record<string, unknown>[];
+
+  const totalRow = (await sql`
+    SELECT COUNT(*)::INT AS n
+    FROM ref.county
+    WHERE state_code = 'NJ'
+  `) as { n: number }[];
+  const totalCounties = totalRow.length > 0 ? Number(totalRow[0].n) : 0;
+
+  const headlineRows: CountyHeadlineRow[] = rows.map((r) => ({
+    county_id: String(r.county_id),
+    county_fips: String(r.county_fips),
+    county_name: String(r.county_name),
+    latest_year:
+      r.latest_year == null ? 0 : Number(r.latest_year),
+    home_price: r.home_price == null ? null : Number(r.home_price),
+    median_income: r.median_income == null ? null : Number(r.median_income),
+    required_income:
+      r.required_income == null ? null : Number(r.required_income),
+    headroom: r.headroom == null ? null : Number(r.headroom),
+    required_ratio:
+      r.required_ratio == null ? null : Number(r.required_ratio),
+  }));
+
+  const withData = headlineRows.filter((r) => r.headroom != null);
+  const unaffordable = withData.filter((r) => (r.headroom ?? 0) < 0);
+  const severely = withData.filter((r) => (r.headroom ?? 0) < -25000);
+
+  const mean = (xs: number[]): number | null =>
+    xs.length === 0 ? null : xs.reduce((a, b) => a + b, 0) / xs.length;
+
+  const latestYear = headlineRows.find((r) => r.latest_year > 0)?.latest_year ?? null;
+
+  return {
+    latest_year: latestYear,
+    total_counties: totalCounties,
+    counties_with_data: withData.length,
+    counties_unaffordable: unaffordable.length,
+    counties_severely_unaffordable: severely.length,
+    avg_headroom: mean(withData.map((r) => r.headroom as number)),
+    avg_median_income: mean(
+      withData
+        .map((r) => r.median_income)
+        .filter((x): x is number => x != null),
+    ),
+    avg_required_income: mean(
+      withData
+        .map((r) => r.required_income)
+        .filter((x): x is number => x != null),
+    ),
+    rows: headlineRows,
+  };
+}
+
 /** Tier-style classifier for the county-level burden ratio. */
 export function burdenTier(ratio: number | null): {
   label: "STRESS" | "ELEVATED" | "TRACKING" | "LAGGING" | "—";

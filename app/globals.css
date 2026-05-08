@@ -15,3 +15,19 @@ body {
     @apply bg-zinc-950 text-zinc-100;
   }
 }
+
+/* Suppress the default <details>/<summary> disclosure triangle so pages
+ * can render a custom chevron. Apply via `class="no-marker"` on either
+ * the <details> or its <summary>. */
+details.no-marker > summary,
+summary.no-marker {
+  list-style: none;
+}
+details.no-marker > summary::-webkit-details-marker,
+summary.no-marker::-webkit-details-marker {
+  display: none;
+}
+details.no-marker > summary::marker,
+summary.no-marker::marker {
+  content: "";
+}
