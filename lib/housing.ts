@@ -16,14 +16,125 @@
  * "is NJ unaffordable?" question into one comparable number, which
  * is the right shape for a top-level table.
  *
- * Base year: BURDEN_BASE_YEAR (constant, 2010). Both HPI and income
- * are normalized to base_year=100 so the ratio at the base year is
- * always 1.0 by construction; subsequent years move freely.
+ * Base year: read at runtime from ref.platform_constants.burden_base_year
+ * (currently 2010). Both HPI and income are normalized to base_year=100
+ * so the ratio at the base year is always 1.0 by construction; subsequent
+ * years move freely. Per VISION_2026 §3 punch-list, the base year is no
+ * longer a code-level magic number.
  */
 
 import { getSql } from "./db";
 
-export const BURDEN_BASE_YEAR = 2010;
+/**
+ * Per-process cache of the burden base year. Loaded from
+ * ref.platform_constants on first read, then reused for the lifetime
+ * of the process. Vercel cold-starts get a fresh cache; warm
+ * invocations within a few minutes reuse it.
+ */
+let _baseYearCache: number | null = null;
+
+/**
+ * Returns the active burden_base_year from ref.platform_constants.
+ * Throws if the row is missing -- the platform cannot operate without
+ * this constant and the failure should be loud at the next page render.
+ *
+ * VISION_2026 §3 punch-list: replaces the `BURDEN_BASE_YEAR = 2010`
+ * literal with a verifiable, version-stamped lookup. The value is
+ * (still) 2010 today but every read is now traceable to migration 080
+ * (ref.platform_constants) + seed 014 + formula version
+ * 1.7.0-platform-constants-v1.
+ */
+export async function getBurdenBaseYear(): Promise<number> {
+  if (_baseYearCache != null) return _baseYearCache;
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT derived.f_platform_constant('burden_base_year')::INT AS y
+  `) as { y: number | null }[];
+  if (rows.length === 0 || rows[0].y == null) {
+    throw new Error(
+      "ref.platform_constants is missing 'burden_base_year'. Apply migration 080 + seed 014.",
+    );
+  }
+  _baseYearCache = Number(rows[0].y);
+  return _baseYearCache;
+}
+
+/**
+ * Tier band as stored in ref.tier_bands. The (lower_bound, upper_bound)
+ * pair forms the half-open range [lower, upper); NULL bounds are
+ * unbounded on that side.
+ */
+export type TierBand = {
+  band_ord: number;
+  label: string;
+  description: string;
+  severity_rank: number;
+  lower_bound: number | null;
+  upper_bound: number | null;
+  ui_bg_classes: string;
+  ui_fg_classes: string;
+  citation_text: string;
+  formula_version: string;
+};
+
+let _burdenTierBandsCache: TierBand[] | null = null;
+
+/**
+ * Returns the active burden_growth_ratio tier bands sorted by band_ord.
+ * Cached per-process. Throws if the table is empty -- the platform
+ * cannot classify counties without these.
+ *
+ * Pulls from the LATEST formula_version that has effective_date <=
+ * CURRENT_DATE; older versions stay readable for historical audit
+ * (see derived.f_tier_band's source).
+ */
+export async function getBurdenTierBands(): Promise<TierBand[]> {
+  if (_burdenTierBandsCache != null) return _burdenTierBandsCache;
+  const sql = getSql();
+  const rows = (await sql`
+    WITH active_version AS (
+      SELECT formula_version
+      FROM ref.tier_bands
+      WHERE tier_kind = 'burden_growth_ratio'
+        AND effective_date <= CURRENT_DATE
+      ORDER BY effective_date DESC, formula_version DESC
+      LIMIT 1
+    )
+    SELECT
+      tb.band_ord::INT                          AS band_ord,
+      tb.label                                  AS label,
+      tb.description                            AS description,
+      tb.severity_rank::INT                     AS severity_rank,
+      tb.lower_bound::FLOAT8                    AS lower_bound,
+      tb.upper_bound::FLOAT8                    AS upper_bound,
+      tb.ui_bg_classes                          AS ui_bg_classes,
+      tb.ui_fg_classes                          AS ui_fg_classes,
+      tb.citation_text                          AS citation_text,
+      tb.formula_version                        AS formula_version
+    FROM ref.tier_bands tb
+    JOIN active_version v ON v.formula_version = tb.formula_version
+    WHERE tb.tier_kind = 'burden_growth_ratio'
+    ORDER BY tb.band_ord
+  `) as Record<string, unknown>[];
+  if (rows.length === 0) {
+    throw new Error(
+      "ref.tier_bands is missing burden_growth_ratio rows. Apply migration 081 + seed 015.",
+    );
+  }
+  _burdenTierBandsCache = rows.map((r) => ({
+    band_ord: Number(r.band_ord),
+    label: String(r.label),
+    description: String(r.description),
+    severity_rank: Number(r.severity_rank),
+    lower_bound: r.lower_bound == null ? null : Number(r.lower_bound),
+    upper_bound: r.upper_bound == null ? null : Number(r.upper_bound),
+    ui_bg_classes: String(r.ui_bg_classes ?? ""),
+    ui_fg_classes: String(r.ui_fg_classes ?? ""),
+    citation_text: String(r.citation_text),
+    formula_version: String(r.formula_version),
+  }));
+  return _burdenTierBandsCache;
+}
 
 export type CountyRow = {
   county_id: string;
@@ -110,7 +221,7 @@ export async function listNjCounties(): Promise<CountyRow[]> {
  */
 export async function listCountyBurden(): Promise<CountyBurdenRow[]> {
   const sql = getSql();
-  const base = BURDEN_BASE_YEAR;
+  const base = await getBurdenBaseYear();
 
   // Use the platform's existing indexed-functions for both series.
   // We compute per-county "latest year both present" inside SQL to
@@ -224,7 +335,7 @@ export async function getCountyDetail(
   countyId: string,
 ): Promise<CountyDetail | null> {
   const sql = getSql();
-  const base = BURDEN_BASE_YEAR;
+  const base = await getBurdenBaseYear();
 
   const countyRows = (await sql`
     SELECT county_id, county_fips, name AS county_name
@@ -990,45 +1101,69 @@ export async function getNjAffordabilityHeadline(): Promise<NjAffordabilityHeadl
   };
 }
 
-/** Tier-style classifier for the county-level burden ratio. */
-export function burdenTier(ratio: number | null): {
-  label: "STRESS" | "ELEVATED" | "TRACKING" | "LAGGING" | "—";
+/**
+ * Classifies a burden ratio against a versioned tier-band registry.
+ *
+ * The legacy 4-arg shape (ratio only) used hardcoded cutoffs
+ * {1.4, 1.15, 0.95}; this version takes the bands from
+ * `ref.tier_bands` (loaded by `getBurdenTierBands`) so every cutoff
+ * carries a citation_text and formula_version. Cutoffs are now
+ * empirically calibrated against the historical NJ panel
+ * (see seed 015 calibration notes).
+ *
+ * NULL ratio renders the "missing data" fallback without consulting
+ * the bands -- this is a UI affordance, not a tier in itself.
+ */
+export type BurdenTierResult = {
+  label: string;
   bg: string;
   fg: string;
   description: string;
-} {
-  if (ratio == null)
+  formula_version: string | null;
+  citation_text: string | null;
+};
+
+export function burdenTier(
+  ratio: number | null,
+  bands: TierBand[],
+): BurdenTierResult {
+  if (ratio == null) {
     return {
       label: "—",
       bg: "bg-zinc-100 dark:bg-zinc-800",
       fg: "text-zinc-500",
       description: "missing data",
+      formula_version: null,
+      citation_text: null,
     };
-  if (ratio >= 1.4)
-    return {
-      label: "STRESS",
-      bg: "bg-red-100 dark:bg-red-950",
-      fg: "text-red-800 dark:text-red-200",
-      description: "housing growth >40% above wage growth",
-    };
-  if (ratio >= 1.15)
-    return {
-      label: "ELEVATED",
-      bg: "bg-orange-100 dark:bg-orange-950",
-      fg: "text-orange-800 dark:text-orange-200",
-      description: "housing growth >15% above wage growth",
-    };
-  if (ratio >= 0.95)
-    return {
-      label: "TRACKING",
-      bg: "bg-emerald-100 dark:bg-emerald-950",
-      fg: "text-emerald-800 dark:text-emerald-200",
-      description: "housing growth roughly matches wage growth",
-    };
+  }
+  // Half-open intervals [lower, upper). Bands are sorted by band_ord
+  // from getBurdenTierBands; the SQL guarantees they form a contiguous
+  // partition.
+  for (const band of bands) {
+    const aboveLower =
+      band.lower_bound == null || ratio >= band.lower_bound;
+    const belowUpper =
+      band.upper_bound == null || ratio < band.upper_bound;
+    if (aboveLower && belowUpper) {
+      return {
+        label: band.label,
+        bg: band.ui_bg_classes,
+        fg: band.ui_fg_classes,
+        description: band.description,
+        formula_version: band.formula_version,
+        citation_text: band.citation_text,
+      };
+    }
+  }
+  // No matching band -- shouldn't happen with a contiguous partition,
+  // but emit the unknown fallback rather than throw.
   return {
-    label: "LAGGING",
-    bg: "bg-blue-50 dark:bg-blue-950",
-    fg: "text-blue-700 dark:text-blue-300",
-    description: "wages outpacing housing growth",
+    label: "—",
+    bg: "bg-zinc-100 dark:bg-zinc-800",
+    fg: "text-zinc-500",
+    description: "ratio outside all configured tier bands",
+    formula_version: null,
+    citation_text: null,
   };
 }

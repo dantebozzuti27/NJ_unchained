@@ -14,10 +14,16 @@
  * scan the column for outliers without doing math.
  */
 
-import { burdenTier, type CountyBurdenRow } from "@/lib/housing";
+import {
+  burdenTier,
+  type CountyBurdenRow,
+  type TierBand,
+} from "@/lib/housing";
 
 interface BurdenBarChartProps {
   rows: CountyBurdenRow[];
+  /** Tier bands (from getBurdenTierBands; passed by the server page). */
+  bands: TierBand[];
   /** Pixel height per row. */
   rowHeight?: number;
   /** Total chart width including labels. */
@@ -26,6 +32,7 @@ interface BurdenBarChartProps {
 
 export function BurdenBarChart({
   rows,
+  bands,
   rowHeight = 22,
   width = 900,
 }: BurdenBarChartProps) {
@@ -84,7 +91,7 @@ export function BurdenBarChart({
 
       {rows.map((r, i) => {
         const y = 24 + i * rowHeight;
-        const tier = burdenTier(r.burden_ratio);
+        const tier = burdenTier(r.burden_ratio, bands);
         const ratio = r.burden_ratio;
         const barFill = tier.label === "STRESS"
           ? "#fca5a5"

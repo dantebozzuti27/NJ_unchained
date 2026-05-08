@@ -2,7 +2,11 @@ import Link from "next/link";
 
 import { Sparkline } from "@/components/Sparkline";
 import { isDbReachable } from "@/lib/db";
-import { burdenTier, getCountyDetail } from "@/lib/housing";
+import {
+  burdenTier,
+  getBurdenTierBands,
+  getCountyDetail,
+} from "@/lib/housing";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -28,7 +32,10 @@ export default async function CountyDetailPage({
   }
 
   const id = decodeURIComponent(rawId);
-  const detail = await getCountyDetail(id);
+  const [detail, bands] = await Promise.all([
+    getCountyDetail(id),
+    getBurdenTierBands(),
+  ]);
   if (!detail) {
     return (
       <div className="rounded-md border border-zinc-300 dark:border-zinc-700 p-6">
@@ -47,7 +54,7 @@ export default async function CountyDetailPage({
     );
   }
 
-  const tier = burdenTier(detail.current.burden_ratio);
+  const tier = burdenTier(detail.current.burden_ratio, bands);
 
   return (
     <div className="space-y-6">

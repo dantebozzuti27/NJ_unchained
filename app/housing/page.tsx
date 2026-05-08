@@ -4,14 +4,16 @@ import { Sparkline } from "@/components/Sparkline";
 import { isDbReachable } from "@/lib/db";
 import { fmtUsd } from "@/lib/format";
 import {
-  BURDEN_BASE_YEAR,
   burdenTier,
+  getBurdenBaseYear,
+  getBurdenTierBands,
   getCountyDetail,
   getNjAffordabilityHeadline,
   listCountyBurden,
   type CountyBurdenRow,
   type CountyHeadlineRow,
   type NjAffordabilityHeadline,
+  type TierBand,
 } from "@/lib/housing";
 
 export const dynamic = "force-dynamic";
@@ -42,11 +44,15 @@ export default async function HousingPage() {
 
   let rows: CountyBurdenRow[] = [];
   let headline: NjAffordabilityHeadline | null = null;
+  let baseYear = 2010;
+  let bands: TierBand[] = [];
   let err: string | null = null;
   try {
-    [rows, headline] = await Promise.all([
+    [rows, headline, baseYear, bands] = await Promise.all([
       listCountyBurden(),
       getNjAffordabilityHeadline(),
+      getBurdenBaseYear(),
+      getBurdenTierBands(),
     ]);
   } catch (e) {
     err = e instanceof Error ? e.message : String(e);
@@ -77,13 +83,13 @@ export default async function HousingPage() {
           <h1 className="text-3xl font-bold tracking-tight">Housing burden</h1>
           <span className="text-sm text-zinc-500">
             21 NJ counties &middot; FHFA HPI &times; ACS5 income, base{" "}
-            <span className="font-mono">{BURDEN_BASE_YEAR}=100</span>
+            <span className="font-mono">{baseYear}=100</span>
           </span>
         </div>
         <p className="max-w-3xl text-sm text-zinc-600 dark:text-zinc-400">
           Each row compares home-price growth (FHFA HPI) to real wage growth
           (ACS5 median household income, deflated via CPI-U) since{" "}
-          <span className="font-mono">{BURDEN_BASE_YEAR}</span>. Click any
+          <span className="font-mono">{baseYear}</span>. Click any
           county to open its <strong>Collapse Curve</strong> &mdash; actual
           median income vs the income required to afford the median home in
           dollars, not abstract ratios.
@@ -97,18 +103,19 @@ export default async function HousingPage() {
       ) : (
         <>
           {headline && headline.latest_year != null && (
-            <HeadlineAnswerCard headline={headline} rows={rows} />
+            <HeadlineAnswerCard headline={headline} rows={rows} bands={bands} />
           )}
 
           <BurdenTable
             rows={rows}
             detailMap={detailMap}
             headroomByFips={headroomByFips}
+            bands={bands}
           />
 
           <PersonalizeCTA />
 
-          <Methodology />
+          <Methodology baseYear={baseYear} bands={bands} />
         </>
       )}
     </div>
@@ -122,15 +129,34 @@ export default async function HousingPage() {
 function HeadlineAnswerCard({
   headline,
   rows,
+  bands,
 }: {
   headline: NjAffordabilityHeadline;
   rows: CountyBurdenRow[];
+  bands: TierBand[];
 }) {
-  const ratios = rows.map((r) => r.burden_ratio).filter((x): x is number => x != null);
-  const stress = ratios.filter((r) => r >= 1.4).length;
-  const elevated = ratios.filter((r) => r >= 1.15 && r < 1.4).length;
-  const lagging = ratios.filter((r) => r < 0.95).length;
+  const ratios = rows
+    .map((r) => r.burden_ratio)
+    .filter((x): x is number => x != null);
   const total = ratios.length;
+  // Tier labels are version-stamped: count by severity_rank rather than
+  // hardcoding cutoffs. Highest severity_rank = STRESS in v1.7.1.
+  const labelByRatio = ratios.map((r) => burdenTier(r, bands).label);
+  const stress = labelByRatio.filter((l) => l === "STRESS").length;
+  const elevated = labelByRatio.filter((l) => l === "ELEVATED").length;
+  const lagging = labelByRatio.filter((l) => l === "LAGGING").length;
+  // Pull the live cutoffs from the bands themselves so the copy
+  // tracks the calibration. STRESS is the highest band (largest band_ord).
+  const stressBand = bands.find((b) => b.label === "STRESS");
+  const elevatedBand = bands.find((b) => b.label === "ELEVATED");
+  const stressPct =
+    stressBand?.lower_bound != null
+      ? Math.round((stressBand.lower_bound - 1) * 100)
+      : null;
+  const elevatedPct =
+    elevatedBand?.lower_bound != null
+      ? Math.round((elevatedBand.lower_bound - 1) * 100)
+      : null;
 
   return (
     <section className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -139,11 +165,12 @@ function HeadlineAnswerCard({
           Burden ratio
         </div>
         <p className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
-          Housing has outpaced real wages by &ge;40% in{" "}
+          Housing has outpaced real wages by &ge;{stressPct ?? "—"}% in{" "}
           <span className="font-semibold text-rose-600 dark:text-rose-400">
             {stress}
           </span>{" "}
-          of {total} NJ counties since {BURDEN_BASE_YEAR}, by &ge;15% in{" "}
+          of {total} NJ counties (the &quot;STRESS&quot; band, calibrated to
+          historical p90), by &ge;{elevatedPct ?? "—"}% in{" "}
           <span className="font-semibold text-orange-600 dark:text-orange-400">
             {stress + elevated}
           </span>
@@ -217,10 +244,12 @@ function BurdenTable({
   rows,
   detailMap,
   headroomByFips,
+  bands,
 }: {
   rows: CountyBurdenRow[];
   detailMap: Map<string, Awaited<ReturnType<typeof getCountyDetail>>>;
   headroomByFips: Map<string, CountyHeadlineRow>;
+  bands: TierBand[];
 }) {
   return (
     <div className="overflow-x-auto rounded-xl border border-zinc-200 dark:border-zinc-800">
@@ -243,7 +272,7 @@ function BurdenTable({
         </thead>
         <tbody>
           {rows.map((r) => {
-            const tier = burdenTier(r.burden_ratio);
+            const tier = burdenTier(r.burden_ratio, bands);
             const detail = detailMap.get(r.county_id);
             const headroom = headroomByFips.get(r.county_fips);
             return (
@@ -428,7 +457,14 @@ function EmptyState() {
   );
 }
 
-function Methodology() {
+function Methodology({
+  baseYear,
+  bands,
+}: {
+  baseYear: number;
+  bands: TierBand[];
+}) {
+  const formulaVersion = bands[0]?.formula_version ?? "—";
   return (
     <details className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 text-sm group no-marker">
       <summary className="font-semibold cursor-pointer flex items-center justify-between gap-2">
@@ -443,27 +479,53 @@ function Methodology() {
       <div className="mt-3 space-y-3 text-zinc-700 dark:text-zinc-300">
         <p>
           For each county we re-index two series so that{" "}
-          <code className="font-mono">{BURDEN_BASE_YEAR}</code> = 100:
+          <code className="font-mono">{baseYear}</code> = 100. The base year
+          itself is loaded from{" "}
+          <code className="font-mono">ref.platform_constants.burden_base_year</code>{" "}
+          (no magic numbers in code).
         </p>
         <ul className="list-disc pl-5 space-y-1">
           <li>
             <strong>HPI growth</strong>: FHFA House Price Index for the
             county (purchase-only, all-transactions) divided by the same
-            county&apos;s {BURDEN_BASE_YEAR} value.
+            county&apos;s {baseYear} value.
           </li>
           <li>
             <strong>Real income growth</strong>: ACS 5-year median household
-            income, deflated to {BURDEN_BASE_YEAR} dollars via CPI-U All
-            Items, divided by the same county&apos;s {BURDEN_BASE_YEAR}{" "}
+            income, deflated to {baseYear} dollars via CPI-U All
+            Items, divided by the same county&apos;s {baseYear}{" "}
             real-dollar value.
           </li>
         </ul>
         <p>
           The <strong>burden ratio</strong> is{" "}
           <code className="font-mono">HPI growth &divide; real income growth</code>.
-          A ratio of 1.40 means home prices have grown 40% faster than
-          inflation-adjusted wages &mdash; a single household needs ~40% more
-          income to buy the same home as in the base year.
+          The colored tier badge on each row classifies the ratio against
+          empirically calibrated cutoffs from{" "}
+          <code className="font-mono">ref.tier_bands</code> (formula version{" "}
+          <span className="font-mono">{formulaVersion}</span>):
+        </p>
+        <ul className="list-disc pl-5 space-y-1 font-mono text-xs">
+          {bands.map((b) => {
+            const lo =
+              b.lower_bound == null ? "(-inf" : `[${b.lower_bound.toFixed(2)}`;
+            const hi =
+              b.upper_bound == null ? "+inf)" : `${b.upper_bound.toFixed(2)})`;
+            return (
+              <li key={b.band_ord}>
+                <span className="font-semibold">{b.label}</span> {lo}, {hi}
+                <span className="ml-2 text-zinc-500 not-italic">
+                  &mdash; {b.description}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+        <p className="text-xs text-zinc-500">
+          Cutoffs are calibrated to historical NJ panel percentiles
+          (315 (county, year) pairs 2010-2024, p75 / p90 anchors).
+          See <code className="font-mono">db/seeds/015_tier_bands.sql</code>
+          for the full citation per band.
         </p>
         <p>
           The <strong>income gap (HUD)</strong> column is the dollar version
