@@ -13,9 +13,13 @@
 #   7. Bulk-loads NJ DCA muni-level property tax 2016-2024 (~5,082 rows).
 #   8. Bulk-loads Zillow ZHVI county-level monthly 2000-01..present
 #      (~21 counties x ~313 months = ~6,600 rows). Phase 6 substrate.
+#   8.5. Backfills freshness signals from raw.<table>.ingested_at via
+#        derived.f_backfill_freshness_from_ingested_at() so the
+#        FreshnessBadge on /housing flips from PARTIAL to FRESH/STALE
+#        based on real timestamps. VISION_2026 §7.1.
 #   9. Prints verification queries: row counts, function existence, last
 #      migration applied, smoke-test of derived.f_user_nj_county_verdicts
-#      and derived.f_housing_index_cross_source.
+#      and derived.f_housing_index_cross_source, freshness rollup.
 #
 # Idempotency contract:
 #   - Every step is safe to re-run. Migrations are gated by sha256-checked
@@ -173,8 +177,41 @@ echo "[8/9] Bulk-loading Zillow ZHVI county monthly (NJ, 2000-01..present)..."
 echo
 
 # ----------------------------------------------------------------------------
+# 8.5 Backfill freshness signals (VISION_2026 §7.1, mig 083). Bridges
+#     the gap between bulk-loaded substrate and governance.dataset_health
+#     so the FreshnessBadge on /housing flips from PARTIAL to FRESH/STALE
+#     based on the real raw.<table>.ingested_at timestamps from steps 4-8.
+#     Idempotent: re-runs are no-ops once signals are recorded.
+# ----------------------------------------------------------------------------
+
+echo "[8.5/9] Backfilling freshness signals from raw.<table>.ingested_at..."
+"$PYTHON" - <<'PY'
+import os, psycopg
+url = os.environ["NEON_DATABASE_URL"]
+with psycopg.connect(url, connect_timeout=20) as conn, conn.cursor() as cur:
+    cur.execute("""
+        SELECT source_id, action,
+               to_char(max_ingested_at, 'YYYY-MM-DD HH24:MI'),
+               rows_in_table
+        FROM derived.f_backfill_freshness_from_ingested_at()
+        ORDER BY source_id
+    """)
+    rows = cur.fetchall()
+    conn.commit()
+    inserted = sum(1 for r in rows if r[1] == "inserted")
+    skipped_recorded = sum(1 for r in rows if r[1] == "skipped_already_recorded")
+    skipped_empty = sum(1 for r in rows if r[1] == "skipped_empty_table")
+    print(f"    {inserted} inserted, {skipped_recorded} already recorded, "
+          f"{skipped_empty} empty.")
+    for src, act, ts, n in rows:
+        if act == "inserted":
+            print(f"      INSERTED {src:<36} @ {ts}  ({n} rows)")
+PY
+echo
+
+# ----------------------------------------------------------------------------
 # 9. Verification: print row counts + smoke-test the personalization engine
-#    + ZHVI cross-source surface
+#    + ZHVI cross-source surface + freshness summary
 # ----------------------------------------------------------------------------
 
 echo "[9/9] Verifying production state..."
