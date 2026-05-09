@@ -94,6 +94,21 @@ export interface EvidenceCard {
 }
 
 /**
+ * Per-cycle freshness + scope summary for the /risk page header.
+ * Lets the user see "FEC data refreshed Nh ago, X candidates, Y
+ * committees" and pick a different cycle if available.
+ */
+export interface CycleSummary {
+  cycle: string;
+  n_candidates: number;
+  n_committees: number;
+  /** ISO-8601 timestamp of the most recent ingested_at on raw.fec_*. */
+  ingested_at_iso: string | null;
+  /** Hours since the most recent ingest. */
+  hours_since_ingest: number | null;
+}
+
+/**
  * Bare entity metadata used to render the /risk/[kind]/[id] header when
  * the entity has NO firing signals (clean incumbent, etc.). One row
  * pulled from raw.fec_candidate / raw.fec_committee / decoded directly
@@ -160,6 +175,15 @@ export interface NjFederalOfficial {
   office_party: string | null;
   incumbent_status: string;
   election_year: number | null;
+  /**
+   * Number of prior FEC cycles where this exact cand_id ran as a true
+   * incumbent (ici='I' AND status='C'). Higher = stronger evidence the
+   * candidate really holds the seat. 0 = newcomer / appointee / special-
+   * election winner whose incumbency is currently only attested by FEC
+   * Form 2 self-declaration; analysts may want to cross-check against
+   * clerk.house.gov / senate.gov rosters.
+   */
+  prior_incumbent_cycles: number;
   risk_score: number;
   n_signals_fired: number;
   signals_fired: string[];

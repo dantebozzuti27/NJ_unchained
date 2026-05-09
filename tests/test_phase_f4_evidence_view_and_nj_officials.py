@@ -904,3 +904,188 @@ class TestNjFederalOfficialsView:
             rows = dict(cur.fetchall())
         assert rows["S4NJ00185"] == "U.S. Senator"
         assert rows["H8NJ11142"] == "U.S. Representative"
+
+
+# ===========================================================================
+# Class G: derived.v_nj_federal_officials -- tenure-aware dedup (mig 090)
+#
+# Real FEC data has misfilers: candidates who self-declare ici='I' on Form 2
+# but are not the actual sitting incumbent. The most extreme real-world case
+# in cycle 2026 is NJ-11 where both Sherrill (true sitting Rep, ici='I'
+# status='N' because she's running for governor not re-election) and Mejia
+# (challenger, ici='I' status='C' -- misfiled) appear.
+#
+# Migration 090 disambiguates by counting prior cycles where the cand_id
+# ran as a true incumbent (ici='I' AND status='C'). Pin that behavior.
+# ===========================================================================
+
+
+def _seed_tenure_disambiguation_scenario(conn: psycopg.Connection) -> None:
+    """NJ-11, cycle 2026: tenure-collision scenario.
+
+    Plants:
+      - cycle 2020: Sherrill ici='I' status='C' (true incumbent, ran)
+      - cycle 2022: Sherrill ici='I' status='C' (true incumbent, ran)
+      - cycle 2024: Sherrill ici='I' status='C' (true incumbent, ran)
+      - cycle 2026: Sherrill ici='I' status='N' (sitting but not running)
+      - cycle 2026: Mejia    ici='I' status='C' (challenger, MISFILED 'I')
+
+    Plus an ici='I' status='C' Senate seed for ordering tests. Plus a
+    NJ-3 newcomer scenario (Conaway analog, replaces a moved-up
+    representative): cycle 2026 ici='I' status='C' with prior=0.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO raw.fec_candidate (
+                cycle, cand_id, cand_name, cand_office, cand_office_st,
+                cand_office_district, cand_pty_affiliation, cand_ici,
+                cand_status, cand_election_yr, cand_pcc, cand_st1, cand_st2,
+                cand_city, cand_st, cand_zip, source_url, source_sha256,
+                source_vintage
+            ) VALUES
+            ('2020', 'H8NJ11142', 'SHERRILL, MIKIE', 'H', 'NJ', '11',
+             'DEM', 'I', 'C', 2020, 'C00633774',
+             '8 MOUNTAIN VIEW BLVD', NULL, 'WAYNE', 'NJ', '07470',
+             'synthetic://test', 'aa', '2020-cn'),
+            ('2022', 'H8NJ11142', 'SHERRILL, MIKIE', 'H', 'NJ', '11',
+             'DEM', 'I', 'C', 2022, 'C00633774',
+             '8 MOUNTAIN VIEW BLVD', NULL, 'WAYNE', 'NJ', '07470',
+             'synthetic://test', 'aa', '2022-cn'),
+            ('2024', 'H8NJ11142', 'SHERRILL, MIKIE', 'H', 'NJ', '11',
+             'DEM', 'I', 'C', 2024, 'C00633774',
+             '8 MOUNTAIN VIEW BLVD', NULL, 'WAYNE', 'NJ', '07470',
+             'synthetic://test', 'aa', '2024-cn'),
+            ('2026', 'H8NJ11142', 'SHERRILL, MIKIE', 'H', 'NJ', '11',
+             'DEM', 'I', 'N', 2026, 'C00633774',
+             '8 MOUNTAIN VIEW BLVD', NULL, 'WAYNE', 'NJ', '07470',
+             'synthetic://test', 'aa', '2026-cn'),
+            ('2026', 'H6NJ11286', 'MEJIA, ANALILIA', 'H', 'NJ', '11',
+             'DEM', 'I', 'C', 2026, NULL,
+             '1 CHALLENGER WAY', NULL, 'VERONA', 'NJ', '07044',
+             'synthetic://test', 'aa', '2026-cn'),
+            -- NJ-3, cycle 2026: newcomer ici='I' status='C', no prior cycles
+            ('2026', 'H4NJ03080', 'CONAWAY, HERB MD', 'H', 'NJ', '03',
+             'DEM', 'I', 'C', 2026, NULL,
+             '1 STATE HOUSE', NULL, 'TRENTON', 'NJ', '08608',
+             'synthetic://test', 'aa', '2026-cn'),
+            -- US Senate, cycle 2026: both senators (Booker has prior, Kim is new)
+            ('2020', 'S4NJ00185', 'BOOKER, CORY A.', 'S', 'NJ', '00',
+             'DEM', 'I', 'C', 2020, 'C00554962',
+             '102 PARK AVE', NULL, 'NEWARK', 'NJ', '07102',
+             'synthetic://test', 'aa', '2020-cn'),
+            ('2026', 'S4NJ00185', 'BOOKER, CORY A.', 'S', 'NJ', '00',
+             'DEM', 'I', 'C', 2026, 'C00554962',
+             '102 PARK AVE', NULL, 'NEWARK', 'NJ', '07102',
+             'synthetic://test', 'aa', '2026-cn'),
+            ('2026', 'S4NJ00466', 'KIM, ANDY', 'S', 'NJ', '00',
+             'DEM', 'I', 'C', 2030, NULL,
+             '1 SENATE WAY', NULL, 'MOORESTOWN', 'NJ', '08057',
+             'synthetic://test', 'aa', '2026-cn');
+        """)
+    conn.commit()
+
+
+class TestNjFederalOfficialsTenureDedup:
+    def test_misfiler_does_not_beat_true_incumbent(
+        self, evidence_db: psycopg.Connection,
+    ) -> None:
+        """For NJ-11 cycle 2026: must pick Sherrill (3 prior incumbent
+        cycles, status='N') OVER Mejia (0 prior cycles, status='C').
+
+        This is the substrate-honesty regression: pre-090 the view
+        filtered on status='C' which dropped Sherrill and surfaced
+        the misfiling challenger Mejia.
+        """
+        _seed_tenure_disambiguation_scenario(evidence_db)
+        with evidence_db.cursor() as cur:
+            cur.execute("""
+                SELECT entity_id, official_name, prior_incumbent_cycles
+                FROM derived.v_nj_federal_officials
+                WHERE cycle='2026' AND office_district='11'
+            """)
+            rows = cur.fetchall()
+        assert len(rows) == 1, f"NJ-11 cycle 2026 must have exactly 1 row, got {rows}"
+        assert rows[0][0] == "H8NJ11142", (
+            f"NJ-11 cycle 2026 must be Sherrill, got {rows[0]}"
+        )
+        assert rows[0][2] == 3, (
+            f"Sherrill must report prior_incumbent_cycles=3, got {rows[0][2]}"
+        )
+
+    def test_newcomer_with_no_prior_still_appears_when_alone(
+        self, evidence_db: psycopg.Connection,
+    ) -> None:
+        """NJ-3 cycle 2026: Conaway has prior=0 (new appointee). With no
+        competitor in the district he must surface. The 'NEW THIS CYCLE'
+        UI badge keys off prior_incumbent_cycles=0."""
+        _seed_tenure_disambiguation_scenario(evidence_db)
+        with evidence_db.cursor() as cur:
+            cur.execute("""
+                SELECT entity_id, prior_incumbent_cycles
+                FROM derived.v_nj_federal_officials
+                WHERE cycle='2026' AND office_district='03'
+            """)
+            rows = cur.fetchall()
+        assert rows == [("H4NJ03080", 0)]
+
+    def test_senate_partition_returns_both_seats(
+        self, evidence_db: psycopg.Connection,
+    ) -> None:
+        """Senate has 2 seats per state both at office_district='00'. The
+        view must partition by cand_id (not district) for office='S' so
+        that BOTH senators surface, not just one."""
+        _seed_tenure_disambiguation_scenario(evidence_db)
+        with evidence_db.cursor() as cur:
+            cur.execute("""
+                SELECT entity_id, prior_incumbent_cycles
+                FROM derived.v_nj_federal_officials
+                WHERE cycle='2026' AND office_code='S'
+                ORDER BY entity_id
+            """)
+            rows = cur.fetchall()
+        assert len(rows) == 2, (
+            f"NJ Senate cycle 2026 must surface BOTH senators, got {rows}"
+        )
+        ids = {r[0] for r in rows}
+        assert ids == {"S4NJ00185", "S4NJ00466"}
+        # Booker has prior cycle (2020), Kim is new
+        rows_by_id = dict(rows)
+        assert rows_by_id["S4NJ00185"] >= 1
+        assert rows_by_id["S4NJ00466"] == 0
+
+    def test_status_n_incumbent_not_running_is_included(
+        self, evidence_db: psycopg.Connection,
+    ) -> None:
+        """status='N' (not yet a candidate this cycle) must NOT be
+        excluded if the candidate has prior incumbent cycles. This is
+        the Sherrill-case: she's still serving but not running for
+        re-election."""
+        _seed_tenure_disambiguation_scenario(evidence_db)
+        with evidence_db.cursor() as cur:
+            cur.execute("""
+                SELECT incumbent_status FROM derived.v_nj_federal_officials
+                WHERE cycle='2026' AND entity_id='H8NJ11142'
+            """)
+            row = cur.fetchone()
+        assert row is not None
+        assert row[0] == "I"
+
+    def test_prior_incumbent_cycles_column_exists_and_is_int(
+        self, evidence_db: psycopg.Connection,
+    ) -> None:
+        """The view must expose prior_incumbent_cycles as INT4 so the
+        TypeScript layer can rely on Number()."""
+        with evidence_db.cursor() as cur:
+            cur.execute("""
+                SELECT data_type FROM information_schema.columns
+                WHERE table_schema='derived'
+                  AND table_name='v_nj_federal_officials'
+                  AND column_name='prior_incumbent_cycles'
+            """)
+            row = cur.fetchone()
+        assert row is not None, (
+            "v_nj_federal_officials.prior_incumbent_cycles must exist"
+        )
+        assert row[0] == "integer", (
+            f"prior_incumbent_cycles must be integer, got {row[0]}"
+        )

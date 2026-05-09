@@ -2,13 +2,16 @@ import Link from "next/link";
 
 import { isDbReachable } from "@/lib/db";
 import {
+  getCycleSummary,
   getNjFederalOfficials,
+  listAvailableCycles,
   listTopNjAnomalies,
   listTopRiskEntities,
   resolveDefaultCycle,
 } from "@/lib/queries";
 import { fmtScore, riskTier } from "@/lib/format";
 import type {
+  CycleSummary,
   EntityKind,
   NjAnomalyCard,
   NjFederalOfficial,
@@ -81,9 +84,21 @@ export default async function RiskPage({
   let officials: NjFederalOfficial[] = [];
   let anomalies: NjAnomalyCard[] = [];
   let nationalRows: RiskRow[] = [];
+  let summary: CycleSummary = {
+    cycle,
+    n_candidates: 0,
+    n_committees: 0,
+    ingested_at_iso: null,
+    hours_since_ingest: null,
+  };
+  let availableCycles: string[] = [];
   let dbError: string | null = null;
 
   try {
+    [summary, availableCycles] = await Promise.all([
+      getCycleSummary(cycle),
+      listAvailableCycles(),
+    ]);
     if (scope === "nj") {
       const [o, a] = await Promise.all([
         getNjFederalOfficials(cycle),
@@ -121,6 +136,13 @@ export default async function RiskPage({
         </div>
         <ScopeToggle cycle={cycle} scope={scope} limit={limit} />
       </header>
+
+      <CycleFreshnessBar
+        summary={summary}
+        availableCycles={availableCycles}
+        scope={scope}
+        limit={limit}
+      />
 
       {dbError ? (
         <div className="rounded-md bg-red-50 dark:bg-red-950 p-4 text-sm">
@@ -185,6 +207,114 @@ function ScopeToggle({
   );
 }
 
+/**
+ * Shows the user how current the underlying FEC bulk is for the
+ * selected cycle (so they can immediately tell whether the displayed
+ * incumbents reflect today's reality or last year's), and lets them
+ * pick a different loaded cycle to view historical / future filings.
+ */
+function CycleFreshnessBar({
+  summary,
+  availableCycles,
+  scope,
+  limit,
+}: {
+  summary: CycleSummary;
+  availableCycles: string[];
+  scope: "nj" | "national";
+  limit: number;
+}) {
+  const cycle = summary.cycle;
+  const ingestedISO = summary.ingested_at_iso;
+  const ingestedDate = ingestedISO ? new Date(ingestedISO) : null;
+  const hours = summary.hours_since_ingest;
+
+  let freshnessLabel: string;
+  let freshnessTone: string;
+  if (hours == null) {
+    freshnessLabel = "no ingest timestamp";
+    freshnessTone =
+      "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300";
+  } else if (hours < 48) {
+    freshnessLabel = `refreshed ${formatHours(hours)}`;
+    freshnessTone =
+      "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200";
+  } else if (hours < 24 * 14) {
+    freshnessLabel = `refreshed ${formatHours(hours)}`;
+    freshnessTone =
+      "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200";
+  } else {
+    freshnessLabel = `refreshed ${formatHours(hours)}`;
+    freshnessTone =
+      "bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-200";
+  }
+
+  const otherCycles = availableCycles.filter((c) => c !== cycle);
+
+  return (
+    <div className="rounded-md border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-4 py-3 text-xs flex flex-wrap items-center gap-x-4 gap-y-2">
+      <div className="flex items-center gap-2">
+        <span
+          className={`inline-flex items-center rounded-full px-2 py-0.5 font-mono ${freshnessTone}`}
+          title={
+            ingestedISO
+              ? `Most recent ingested_at on raw.fec_candidate / raw.fec_committee for cycle ${cycle}: ${ingestedISO}`
+              : ""
+          }
+        >
+          cycle {cycle} · {freshnessLabel}
+        </span>
+        {ingestedDate ? (
+          <span className="font-mono text-zinc-500">
+            ingested {ingestedDate.toISOString().slice(0, 16).replace("T", " ")}{" "}
+            UTC
+          </span>
+        ) : null}
+      </div>
+      <div className="font-mono text-zinc-500">
+        scope: {summary.n_candidates.toLocaleString()} candidates ·{" "}
+        {summary.n_committees.toLocaleString()} committees in{" "}
+        <span className="font-semibold">raw.fec_*</span>
+      </div>
+      {otherCycles.length > 0 && (
+        <div className="ml-auto flex items-center gap-1">
+          <span className="text-zinc-500">view cycle:</span>
+          {availableCycles.map((c) => (
+            <Link
+              key={c}
+              href={`/risk?cycle=${encodeURIComponent(
+                c,
+              )}&scope=${scope}&limit=${limit}`}
+              className={`rounded px-2 py-0.5 font-mono ${
+                c === cycle
+                  ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                  : "border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800"
+              }`}
+            >
+              {c}
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatHours(h: number): string {
+  if (h < 1) {
+    const mins = Math.max(1, Math.round(h * 60));
+    return `${mins} min ago`;
+  }
+  if (h < 48) {
+    return `${Math.round(h)}h ago`;
+  }
+  const days = h / 24;
+  if (days < 30) return `${Math.round(days)}d ago`;
+  const months = days / 30;
+  if (months < 24) return `${Math.round(months)}mo ago`;
+  return `${Math.round(months / 12)}y ago`;
+}
+
 function NjFederalOfficialsSection({
   officials,
   cycle,
@@ -206,7 +336,7 @@ function NjFederalOfficialsSection({
         </h2>
         <span className="text-xs text-zinc-500">
           Source: FEC Candidate Master (cn{cycle.slice(2)}.zip),
-          incumbents only
+          deduplicated by tenure (prior incumbent cycles)
         </span>
       </div>
 
@@ -281,6 +411,14 @@ function OfficialCard({ official }: { official: NjFederalOfficial }) {
                 className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold ${partyStyle.bg} ${partyStyle.fg}`}
               >
                 {official.office_party}
+              </span>
+            )}
+            {official.prior_incumbent_cycles === 0 && (
+              <span
+                className="inline-flex rounded bg-blue-100 dark:bg-blue-950 px-1.5 py-0.5 text-[10px] font-bold text-blue-800 dark:text-blue-200"
+                title="No prior FEC cycle where this candidate ran as a true incumbent. Likely a new appointee, special-election winner, or first-time office-holder this cycle. FEC self-declaration only."
+              >
+                NEW THIS CYCLE
               </span>
             )}
           </div>

@@ -20,6 +20,7 @@
 
 import { getSql } from "./db";
 import type {
+  CycleSummary,
   EntityDetail,
   EntityHeaderInfo,
   EntityKind,
@@ -382,6 +383,7 @@ export async function getNjFederalOfficials(
       office_party,
       incumbent_status,
       election_year,
+      prior_incumbent_cycles::INT AS prior_incumbent_cycles,
       risk_score::FLOAT8 AS risk_score,
       n_signals_fired::INT AS n_signals_fired,
       COALESCE(signals_fired, ARRAY[]::TEXT[]) AS signals_fired,
@@ -400,6 +402,7 @@ export async function getNjFederalOfficials(
     office_party: r.office_party == null ? null : String(r.office_party),
     incumbent_status: String(r.incumbent_status),
     election_year: r.election_year == null ? null : Number(r.election_year),
+    prior_incumbent_cycles: Number(r.prior_incumbent_cycles ?? 0),
     risk_score: Number(r.risk_score),
     n_signals_fired: Number(r.n_signals_fired),
     signals_fired: Array.isArray(r.signals_fired)
@@ -499,6 +502,74 @@ export async function listTopNjAnomalies(opts: {
         ? null
         : String(r.office_incumbent_status),
   }));
+}
+
+/**
+ * Cycles that currently have FEC data loaded. Ordered most-recent-first.
+ * Powers the cycle picker on /risk so the user can switch between
+ * (e.g.) the current cycle 2026 and the historical cycle 2024.
+ */
+export async function listAvailableCycles(): Promise<string[]> {
+  const sql = getSql();
+  try {
+    const rows = (await sql`
+      SELECT DISTINCT cycle
+      FROM raw.fec_candidate
+      ORDER BY cycle DESC
+    `) as Record<string, unknown>[];
+    return rows.map((r) => String(r.cycle));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Per-cycle scope + freshness summary. Renders the "cycle 2026 — N
+ * candidates, M committees, refreshed Xh ago" line above the /risk
+ * sections so the user can immediately tell how current the data is.
+ */
+export async function getCycleSummary(
+  cycle: string,
+): Promise<CycleSummary> {
+  const sql = getSql();
+  let n_candidates = 0;
+  let n_committees = 0;
+  let ingested_at_iso: string | null = null;
+  let hours_since_ingest: number | null = null;
+
+  try {
+    const rows = (await sql`
+      SELECT
+        (SELECT COUNT(*)::INT FROM raw.fec_candidate WHERE cycle = ${cycle})
+          AS n_candidates,
+        (SELECT COUNT(*)::INT FROM raw.fec_committee WHERE cycle = ${cycle})
+          AS n_committees,
+        GREATEST(
+          (SELECT MAX(ingested_at) FROM raw.fec_candidate WHERE cycle = ${cycle}),
+          (SELECT MAX(ingested_at) FROM raw.fec_committee WHERE cycle = ${cycle})
+        ) AS max_ingested_at
+    `) as Record<string, unknown>[];
+    if (rows.length > 0) {
+      const r = rows[0];
+      n_candidates = Number(r.n_candidates ?? 0);
+      n_committees = Number(r.n_committees ?? 0);
+      if (r.max_ingested_at) {
+        const t = new Date(String(r.max_ingested_at));
+        ingested_at_iso = t.toISOString();
+        hours_since_ingest = (Date.now() - t.getTime()) / 3_600_000;
+      }
+    }
+  } catch {
+    /* fall through with zeros */
+  }
+
+  return {
+    cycle,
+    n_candidates,
+    n_committees,
+    ingested_at_iso,
+    hours_since_ingest,
+  };
 }
 
 /**
