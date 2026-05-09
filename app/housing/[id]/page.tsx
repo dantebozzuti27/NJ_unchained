@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { CivicIntegrityCallout } from "@/components/CivicIntegrityCallout";
 import { CrossSourceAnnotationCallout } from "@/components/CrossSourceAnnotationCallout";
 import { FreshnessBadge } from "@/components/FreshnessBadge";
 import { Sparkline } from "@/components/Sparkline";
@@ -11,6 +12,10 @@ import {
   getBurdenTierBands,
   getCountyDetail,
 } from "@/lib/housing";
+import {
+  getNjCivicIntegritySummary,
+  resolveDefaultCycle,
+} from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -36,12 +41,21 @@ export default async function CountyDetailPage({
   }
 
   const id = decodeURIComponent(rawId);
-  const [detail, bands, freshness] = await Promise.all([
+  const [detail, bands, freshness, fecCycle] = await Promise.all([
     getCountyDetail(id),
     getBurdenTierBands(),
     // Freshness is best-effort; missing migration must not break the page.
     getPlatformFreshnessHeadline().catch(() => null),
+    // Pillar-2 cross-pillar callout uses the latest FEC cycle present in
+    // v_entity_fraud_risk; failure here is tolerated (returns "2024" so
+    // the callout still has a default to query against).
+    resolveDefaultCycle().catch(() => "2024"),
   ]);
+  // Cross-pillar civic-integrity context: best-effort so a missing mig
+  // 091 (or empty raw.fec_*) cannot break the housing page.
+  const civicIntegrity = await getNjCivicIntegritySummary(fecCycle).catch(
+    () => null,
+  );
   // Annotation fetch is dependent on the cross_source slice of detail;
   // best-effort so a missing mig 084 / seed 017 cannot break the page.
   const annotation =
@@ -272,6 +286,14 @@ export default async function CountyDetailPage({
             />
           )}
         </section>
+      )}
+
+      {civicIntegrity && (
+        <CivicIntegrityCallout
+          summary={civicIntegrity}
+          cycle={fecCycle}
+          countyName={detail.county_name}
+        />
       )}
 
       {freshness && <FreshnessBadge headline={freshness} variant="detail" />}

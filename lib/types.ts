@@ -94,6 +94,32 @@ export interface EvidenceCard {
 }
 
 /**
+ * State-wide NJ civic-integrity roll-up for a given FEC cycle. Used by
+ * the cross-pillar callout on /housing/[id] so a Pillar-1 housing page
+ * surfaces the relevant Pillar-2 context without leaving the page.
+ *
+ * Per-county granularity is intentionally NOT exposed here: the HUD
+ * USPS-County crosswalk that maps committee mailing-address ZIP ->
+ * county_fips requires a HUD API key (huduser.gov returns HTTP 202 to
+ * anonymous bulk-data requests). Until that crosswalk is loaded into
+ * ref.zip_county, we surface state-level aggregates and link out to
+ * /risk for drill-down rather than fabricate per-county counts.
+ */
+export interface NjCivicIntegritySummary {
+  cycle: string;
+  n_candidates_total: number;
+  n_candidates_with_signals: number;
+  max_candidate_risk_score: number;
+  n_committees_total: number;
+  n_committees_with_signals: number;
+  max_committee_risk_score: number;
+  n_addresses_with_signals: number;
+  max_address_risk_score: number;
+  total_nj_entities_with_signals: number;
+  max_nj_risk_score: number;
+}
+
+/**
  * Per-cycle freshness + scope summary for the /risk page header.
  * Lets the user see "FEC data refreshed Nh ago, X candidates, Y
  * committees" and pick a different cycle if available.

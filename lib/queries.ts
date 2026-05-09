@@ -26,6 +26,7 @@ import type {
   EntityKind,
   EvidenceCard,
   NjAnomalyCard,
+  NjCivicIntegritySummary,
   NjFederalOfficial,
   PlatformStatus,
   RiskRow,
@@ -502,6 +503,56 @@ export async function listTopNjAnomalies(opts: {
         ? null
         : String(r.office_incumbent_status),
   }));
+}
+
+/**
+ * State-wide NJ civic-integrity summary for a given FEC cycle. Powers
+ * the cross-pillar callout on /housing/[id]. Returns null if the view
+ * is missing (mig 091 not applied) or if the cycle has no NJ-keyed FEC
+ * data; the housing page treats nulls as "skip the callout" rather
+ * than rendering an empty box.
+ */
+export async function getNjCivicIntegritySummary(
+  cycle: string,
+): Promise<NjCivicIntegritySummary | null> {
+  const sql = getSql();
+  try {
+    const rows = (await sql`
+      SELECT
+        cycle,
+        n_candidates_total,
+        n_candidates_with_signals,
+        max_candidate_risk_score::FLOAT8 AS max_candidate_risk_score,
+        n_committees_total,
+        n_committees_with_signals,
+        max_committee_risk_score::FLOAT8 AS max_committee_risk_score,
+        n_addresses_with_signals,
+        max_address_risk_score::FLOAT8 AS max_address_risk_score,
+        total_nj_entities_with_signals,
+        max_nj_risk_score::FLOAT8 AS max_nj_risk_score
+      FROM derived.v_nj_civic_integrity_state_summary
+      WHERE cycle = ${cycle}
+    `) as Record<string, unknown>[];
+    if (rows.length === 0) return null;
+    const r = rows[0];
+    return {
+      cycle: String(r.cycle),
+      n_candidates_total: Number(r.n_candidates_total ?? 0),
+      n_candidates_with_signals: Number(r.n_candidates_with_signals ?? 0),
+      max_candidate_risk_score: Number(r.max_candidate_risk_score ?? 0),
+      n_committees_total: Number(r.n_committees_total ?? 0),
+      n_committees_with_signals: Number(r.n_committees_with_signals ?? 0),
+      max_committee_risk_score: Number(r.max_committee_risk_score ?? 0),
+      n_addresses_with_signals: Number(r.n_addresses_with_signals ?? 0),
+      max_address_risk_score: Number(r.max_address_risk_score ?? 0),
+      total_nj_entities_with_signals: Number(
+        r.total_nj_entities_with_signals ?? 0,
+      ),
+      max_nj_risk_score: Number(r.max_nj_risk_score ?? 0),
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**
