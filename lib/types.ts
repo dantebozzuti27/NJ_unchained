@@ -216,6 +216,55 @@ export interface NjFederalOfficial {
   max_severity: number;
 }
 
+/**
+ * One row of derived.v_nj_state_candidates -- a manually-curated NJ
+ * state-level candidate for a major office (governor, lt_governor,
+ * AG, state senate, state assembly). Sourced from ref.nj_state_candidate
+ * with substrate-honest citation + provenance metadata.
+ *
+ * The platform makes NO contribution / expenditure / anomaly-signal
+ * claims about these entities until the NJ ELEC ingester ships
+ * (campaign_finance_ingest_pending = TRUE for every row today). The
+ * UI must surface this gap explicitly.
+ */
+export interface NjStateCandidate {
+  /** PK from ref.nj_state_candidate, format: NJ-STATE-<LAST>-<FIRST>-<YEAR>-<OFFICE>. */
+  entity_id: string;
+  full_name: string;
+  /** DEM / REP / IND / LIB / GRN / CON / OTHER. */
+  party: string;
+  /** governor / lt_governor / attorney_general / state_senate / state_assembly / state_supreme_court. */
+  office: string;
+  /** Human-readable office label, e.g. "Governor of New Jersey". */
+  office_label: string;
+  election_year: number;
+  /** ISO date string, e.g. "2025-06-10". */
+  primary_date: string | null;
+  /** ISO date string, e.g. "2025-11-04". */
+  general_date: string | null;
+  announced_candidate: boolean;
+  /** ISO date string of public-announcement date. */
+  announcement_date: string | null;
+  announcement_url: string | null;
+  /** Held office at time of announcement, e.g. "Mayor of Jersey City (2013-present)". */
+  prior_office: string | null;
+  campaign_committee_name: string | null;
+  /** TRUE = platform has NO ELEC ingest for this candidate. */
+  campaign_finance_ingest_pending: boolean;
+  /** Certified primary winner; NULL until NJ Division of Elections ingest. */
+  primary_winner: boolean | null;
+  primary_result_url: string | null;
+  general_winner: boolean | null;
+  general_result_url: string | null;
+  /** Canonical citation URL for the row. */
+  source_url: string;
+  /** Citation kind, e.g. "Wikipedia, 2025 New Jersey gubernatorial election". */
+  source_authority: string;
+  /** Date the maintainer last verified source_url. */
+  source_doc_date: string;
+  notes: string | null;
+}
+
 export interface PlatformStatus {
   db_reachable: boolean;
   error?: string;

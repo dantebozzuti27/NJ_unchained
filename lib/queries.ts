@@ -28,6 +28,7 @@ import type {
   NjAnomalyCard,
   NjCivicIntegritySummary,
   NjFederalOfficial,
+  NjStateCandidate,
   PlatformStatus,
   RiskRow,
   SignalRow,
@@ -410,6 +411,92 @@ export async function getNjFederalOfficials(
       ? (r.signals_fired as string[])
       : [],
     max_severity: Number(r.max_severity),
+  }));
+}
+
+/**
+ * Publicly-announced NJ statewide candidates for a given election year
+ * (defaults to the most-recent year present in ref.nj_state_candidate).
+ * Reads from derived.v_nj_state_candidates, which exposes the
+ * campaign_finance_ingest_pending flag the UI renders as a badge.
+ *
+ * The platform makes NO contribution / expenditure / anomaly-signal
+ * claims about these entities -- the NJ ELEC ingester has not shipped,
+ * so the badge is TRUE for every row. When the ingester lands and
+ * elec_filing_id is populated, the badge flips off automatically and
+ * the candidate becomes eligible for donor-graph fraud signals.
+ *
+ * Substrate: ref.nj_state_candidate (mig 093) seeded by 022.
+ */
+export async function getNjStateCandidates(
+  opts: { electionYear?: number; office?: string } = {},
+): Promise<NjStateCandidate[]> {
+  const sql = getSql();
+  const electionYear = opts.electionYear ?? null;
+  const office = opts.office ?? null;
+  const rows = (await sql`
+    SELECT
+      entity_id,
+      full_name,
+      party,
+      office,
+      office_label,
+      election_year::INT     AS election_year,
+      primary_date::TEXT     AS primary_date,
+      general_date::TEXT     AS general_date,
+      announced_candidate,
+      announcement_date::TEXT AS announcement_date,
+      announcement_url,
+      prior_office,
+      campaign_committee_name,
+      campaign_finance_ingest_pending,
+      primary_winner,
+      primary_result_url,
+      general_winner,
+      general_result_url,
+      source_url,
+      source_authority,
+      source_doc_date::TEXT  AS source_doc_date,
+      notes
+    FROM derived.v_nj_state_candidates
+    WHERE (${electionYear}::INT  IS NULL OR election_year = ${electionYear}::INT)
+      AND (${office}::TEXT       IS NULL OR office        = ${office}::TEXT)
+  `) as Record<string, unknown>[];
+
+  return rows.map((r) => ({
+    entity_id: String(r.entity_id),
+    full_name: String(r.full_name),
+    party: String(r.party),
+    office: String(r.office),
+    office_label: String(r.office_label),
+    election_year: Number(r.election_year),
+    primary_date: r.primary_date == null ? null : String(r.primary_date),
+    general_date: r.general_date == null ? null : String(r.general_date),
+    announced_candidate: Boolean(r.announced_candidate),
+    announcement_date:
+      r.announcement_date == null ? null : String(r.announcement_date),
+    announcement_url:
+      r.announcement_url == null ? null : String(r.announcement_url),
+    prior_office: r.prior_office == null ? null : String(r.prior_office),
+    campaign_committee_name:
+      r.campaign_committee_name == null
+        ? null
+        : String(r.campaign_committee_name),
+    campaign_finance_ingest_pending: Boolean(
+      r.campaign_finance_ingest_pending,
+    ),
+    primary_winner:
+      r.primary_winner == null ? null : Boolean(r.primary_winner),
+    primary_result_url:
+      r.primary_result_url == null ? null : String(r.primary_result_url),
+    general_winner:
+      r.general_winner == null ? null : Boolean(r.general_winner),
+    general_result_url:
+      r.general_result_url == null ? null : String(r.general_result_url),
+    source_url: String(r.source_url),
+    source_authority: String(r.source_authority),
+    source_doc_date: String(r.source_doc_date),
+    notes: r.notes == null ? null : String(r.notes),
   }));
 }
 

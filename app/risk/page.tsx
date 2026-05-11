@@ -4,6 +4,7 @@ import { isDbReachable } from "@/lib/db";
 import {
   getCycleSummary,
   getNjFederalOfficials,
+  getNjStateCandidates,
   listAvailableCycles,
   listTopNjAnomalies,
   listTopRiskEntities,
@@ -15,6 +16,7 @@ import type {
   EntityKind,
   NjAnomalyCard,
   NjFederalOfficial,
+  NjStateCandidate,
   RiskRow,
 } from "@/lib/types";
 
@@ -82,6 +84,7 @@ export default async function RiskPage({
   );
 
   let officials: NjFederalOfficial[] = [];
+  let stateCandidates: NjStateCandidate[] = [];
   let anomalies: NjAnomalyCard[] = [];
   let nationalRows: RiskRow[] = [];
   let summary: CycleSummary = {
@@ -100,11 +103,13 @@ export default async function RiskPage({
       listAvailableCycles(),
     ]);
     if (scope === "nj") {
-      const [o, a] = await Promise.all([
+      const [o, s, a] = await Promise.all([
         getNjFederalOfficials(cycle),
+        getNjStateCandidates(),
         listTopNjAnomalies({ cycle, limit }),
       ]);
       officials = o;
+      stateCandidates = s;
       anomalies = a;
     } else {
       nationalRows = await listTopRiskEntities({ cycle, limit });
@@ -159,6 +164,7 @@ export default async function RiskPage({
             officials={officials}
             cycle={cycle}
           />
+          <NjStateCandidatesSection candidates={stateCandidates} />
           <NjAnomaliesSection anomalies={anomalies} />
           <ScopeBoundaryNote />
         </>
@@ -449,6 +455,266 @@ function OfficialCard({ official }: { official: NjFederalOfficial }) {
   );
 }
 
+function NjStateCandidatesSection({
+  candidates,
+}: {
+  candidates: NjStateCandidate[];
+}) {
+  if (candidates.length === 0) return null;
+
+  // Group by (election_year, office) so the UI surfaces "2025 Governor"
+  // as one block; future-proof for state legislature + AG races.
+  type Bucket = {
+    election_year: number;
+    office: string;
+    office_label: string;
+    primary_date: string | null;
+    general_date: string | null;
+    rows: NjStateCandidate[];
+  };
+  const buckets = new Map<string, Bucket>();
+  for (const c of candidates) {
+    const k = `${c.election_year}|${c.office}`;
+    const b = buckets.get(k);
+    if (b) {
+      b.rows.push(c);
+    } else {
+      buckets.set(k, {
+        election_year: c.election_year,
+        office: c.office,
+        office_label: c.office_label,
+        primary_date: c.primary_date,
+        general_date: c.general_date,
+        rows: [c],
+      });
+    }
+  }
+  const ordered = [...buckets.values()].sort((a, b) => {
+    if (a.election_year !== b.election_year) {
+      return b.election_year - a.election_year;
+    }
+    return a.office.localeCompare(b.office);
+  });
+
+  return (
+    <section>
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-3">
+        <h2 className="text-lg font-semibold tracking-tight">
+          NJ statewide candidates
+          <span className="ml-2 text-sm font-normal text-zinc-500">
+            ({candidates.length} publicly-announced)
+          </span>
+        </h2>
+        <span className="text-xs text-zinc-500">
+          State-level offices (NJ ELEC jurisdiction).{" "}
+          <span className="font-mono">
+            campaign-finance ingest pending
+          </span>{" "}
+          on every card.
+        </span>
+      </div>
+
+      <div className="space-y-5">
+        {ordered.map((b) => (
+          <NjStateCandidateBucket key={`${b.election_year}|${b.office}`} bucket={b} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function NjStateCandidateBucket({
+  bucket,
+}: {
+  bucket: {
+    election_year: number;
+    office: string;
+    office_label: string;
+    primary_date: string | null;
+    general_date: string | null;
+    rows: NjStateCandidate[];
+  };
+}) {
+  const dems = bucket.rows.filter((c) => c.party === "DEM");
+  const reps = bucket.rows.filter((c) => c.party === "REP");
+  const other = bucket.rows.filter(
+    (c) => c.party !== "DEM" && c.party !== "REP",
+  );
+  const primaryDate = bucket.primary_date
+    ? new Date(bucket.primary_date).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : null;
+  const generalDate = bucket.general_date
+    ? new Date(bucket.general_date).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : null;
+
+  return (
+    <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-3">
+        <div className="text-sm font-semibold">
+          {bucket.election_year} {bucket.office_label}
+          <span className="ml-2 font-normal text-zinc-500">
+            ({bucket.rows.length} candidates)
+          </span>
+        </div>
+        <div className="font-mono text-[11px] text-zinc-500">
+          {primaryDate ? <>primary {primaryDate}</> : null}
+          {primaryDate && generalDate ? <span aria-hidden> · </span> : null}
+          {generalDate ? <>general {generalDate}</> : null}
+        </div>
+      </div>
+
+      {dems.length > 0 && (
+        <PartyColumn party="DEM" label="Democratic primary" rows={dems} />
+      )}
+      {reps.length > 0 && (
+        <PartyColumn party="REP" label="Republican primary" rows={reps} />
+      )}
+      {other.length > 0 && (
+        <PartyColumn party="OTHER" label="Other / unaffiliated" rows={other} />
+      )}
+    </div>
+  );
+}
+
+function PartyColumn({
+  party,
+  label,
+  rows,
+}: {
+  party: string;
+  label: string;
+  rows: NjStateCandidate[];
+}) {
+  return (
+    <div className="mt-3 first:mt-0">
+      <div className="mb-1 flex items-center gap-2 text-xs uppercase tracking-wider text-zinc-500">
+        <span>{label}</span>
+        <span className="font-mono normal-case text-[10px]">
+          ({rows.length})
+        </span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+        {rows.map((c) => (
+          <StateCandidateCard key={c.entity_id} candidate={c} />
+        ))}
+      </div>
+      {/* Suppress unused-var warning while keeping the named prop. */}
+      <span className="hidden" data-party={party} />
+    </div>
+  );
+}
+
+function StateCandidateCard({
+  candidate,
+}: {
+  candidate: NjStateCandidate;
+}) {
+  const partyStyle = PARTY_LABELS[candidate.party] ?? {
+    fg: "text-zinc-700 dark:text-zinc-300",
+    bg: "bg-zinc-100 dark:bg-zinc-800",
+  };
+  const announced = candidate.announcement_date
+    ? new Date(candidate.announcement_date).toLocaleDateString(undefined, {
+        month: "short",
+        year: "numeric",
+      })
+    : null;
+  const verified = candidate.source_doc_date
+    ? new Date(candidate.source_doc_date).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : null;
+
+  return (
+    <div className="rounded-md border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span
+              className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold ${partyStyle.bg} ${partyStyle.fg}`}
+            >
+              {candidate.party}
+            </span>
+            {candidate.campaign_finance_ingest_pending && (
+              <span
+                className="inline-flex rounded bg-amber-100 dark:bg-amber-950 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:text-amber-200"
+                title="NJ ELEC contribution/expenditure data is not yet ingested. The platform makes no claims about this candidate's campaign finance."
+              >
+                ELEC ingest pending
+              </span>
+            )}
+          </div>
+          <div className="mt-1 truncate text-sm font-semibold">
+            {candidate.full_name}
+          </div>
+          {candidate.prior_office && (
+            <div className="mt-0.5 line-clamp-2 text-xs text-zinc-600 dark:text-zinc-400">
+              {candidate.prior_office}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-zinc-500">
+        {announced && (
+          <span title="Date the candidacy was publicly announced">
+            announced {announced}
+          </span>
+        )}
+        {verified && (
+          <>
+            {announced ? <span aria-hidden>·</span> : null}
+            <span
+              title="Date the platform maintainer last verified the citation URL"
+              className="font-mono"
+            >
+              verified {verified}
+            </span>
+          </>
+        )}
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-200 dark:border-zinc-800 pt-2 text-[10px]">
+        <a
+          href={candidate.source_url}
+          target="_blank"
+          rel="noreferrer"
+          className="font-mono text-blue-700 underline hover:text-blue-900 dark:text-blue-400 dark:hover:text-blue-200"
+          title={`Citation: ${candidate.source_authority}`}
+        >
+          Verify on Wikipedia ↗
+        </a>
+        {candidate.announcement_url &&
+          candidate.announcement_url !== candidate.source_url && (
+            <>
+              <span aria-hidden className="text-zinc-300 dark:text-zinc-700">
+                ·
+              </span>
+              <a
+                href={candidate.announcement_url}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono text-zinc-700 underline hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-zinc-100"
+              >
+                Profile ↗
+              </a>
+            </>
+          )}
+      </div>
+    </div>
+  );
+}
+
 function NjAnomaliesSection({ anomalies }: { anomalies: NjAnomalyCard[] }) {
   return (
     <section>
@@ -670,10 +936,13 @@ function ScopeBoundaryNote() {
       <strong className="text-zinc-700 dark:text-zinc-300">
         Scope boundary:
       </strong>{" "}
-      this view covers <em>federal</em> seats only (US Senate + House) and
-      FEC-registered committees / treasurers / address clusters with NJ
-      filings. NJ Governor, state legislature, and county/municipal offices
-      live at{" "}
+      fraud-signal evaluation in this view covers <em>federal</em>{" "}
+      seats only (US Senate + House) and FEC-registered committees /
+      treasurers / address clusters with NJ filings. NJ Governor + state
+      legislature candidates appear in the curated{" "}
+      <em>"NJ statewide candidates"</em> section above, but the platform
+      runs <em>no</em> contribution / expenditure / anomaly signals
+      against them until the{" "}
       <a
         href="https://www.elec.nj.gov/publicinformation/data_download.htm"
         className="underline"
@@ -682,10 +951,11 @@ function ScopeBoundaryNote() {
       >
         NJ ELEC
       </a>{" "}
-      and are scoped to a separate ingester (deferred). The national
-      toggle surfaces all 5,851 entities scored for the cycle without the
-      NJ filter — useful for benchmarking but introduces stale-incumbent
-      noise.
+      ingester ships — every state-candidate card carries an{" "}
+      <span className="font-mono">ELEC ingest pending</span> badge to
+      make that gap explicit. The national toggle surfaces all entities
+      scored for the cycle without the NJ filter — useful for
+      benchmarking but introduces stale-incumbent noise.
     </aside>
   );
 }
