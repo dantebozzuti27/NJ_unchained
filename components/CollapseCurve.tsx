@@ -21,6 +21,16 @@
  * Curve compares two series in the SAME unit (dollars), and the
  * absolute gap is the headline -- a "$80K shortfall" lands harder
  * than "1.6x ratio". We plot in dollars and label the axis in K.
+ *
+ * Nominal vs real-dollar lens
+ * ---------------------------
+ * The chart's `lens` is a UI concern, not a data concern: the caller
+ * decides which series to pass in. When the caller passes real-dollar
+ * (CPI-deflated) values, it also supplies `realDollarsBaseYear` so the
+ * legend / axis can explicitly label "(in 2024 dollars)" -- substrate-
+ * honesty rule: never let a reader guess which year's dollars are on
+ * the axis. The chart itself is dimensionless across the two lenses;
+ * only the labels change.
  */
 
 export interface CollapseCurvePoint {
@@ -36,6 +46,19 @@ export interface CollapseCurveProps {
   height?: number;
   /** Optional title for tooltip / screen reader. */
   title?: string;
+  /**
+   * Dollar lens that the points are denominated in. Defaults to
+   * "nominal" so the existing caller behavior is preserved. When set
+   * to "real", the legend appends "(in <realDollarsBaseYear> dollars)".
+   */
+  lens?: "nominal" | "real";
+  /**
+   * Real-dollar base year for labeling. Required when lens === "real";
+   * ignored when lens === "nominal". Substrate-honest: if the caller
+   * cannot supply a base year (CPI substrate empty), it should pass
+   * lens="nominal" rather than mislabel real-dollar values.
+   */
+  realDollarsBaseYear?: number | null;
 }
 
 const PADDING = { top: 24, right: 28, bottom: 40, left: 72 };
@@ -66,7 +89,13 @@ export function CollapseCurve({
   width = 720,
   height = 380,
   title,
+  lens = "nominal",
+  realDollarsBaseYear = null,
 }: CollapseCurveProps) {
+  const lensSuffix =
+    lens === "real" && realDollarsBaseYear != null
+      ? ` (in ${realDollarsBaseYear} dollars)`
+      : "";
   // Only plot points where BOTH series are non-null. Substrate honesty:
   // years with only median income (no required because tax tables not
   // seeded) are omitted from the chart, not extrapolated.
@@ -292,13 +321,16 @@ export function CollapseCurve({
             fill="transparent"
           >
             <title>
-              {`${p.year}: median ${fmtK(p.median_income!)} / required ${fmtK(p.required_income!)} / gap ${fmtK(p.required_income! - p.median_income!)}`}
+              {`${p.year}: median ${fmtK(p.median_income!)} / required ${fmtK(p.required_income!)} / gap ${fmtK(p.required_income! - p.median_income!)}${lensSuffix}`}
             </title>
           </rect>
         </g>
       ))}
 
-      {/* Legend */}
+      {/* Legend. Suffixed with the real-dollar base year when lens="real"
+          so the reader cannot misread which year's dollars the axis is
+          measuring -- the deflation arithmetic is visible to the eye,
+          not buried in caller code. */}
       <g transform={`translate(${PADDING.left}, ${PADDING.top - 8})`}>
         <rect x={0} y={-9} width={10} height={3} fill="#2563eb" />
         <text
@@ -308,17 +340,17 @@ export function CollapseCurve({
           fill="currentColor"
           opacity={0.85}
         >
-          Median income (actual)
+          {`Median income (actual)${lensSuffix}`}
         </text>
-        <rect x={170} y={-9} width={10} height={3} fill="#dc2626" />
+        <rect x={200} y={-9} width={10} height={3} fill="#dc2626" />
         <text
-          x={184}
+          x={214}
           y={-7}
           fontSize="11"
           fill="currentColor"
           opacity={0.85}
         >
-          Required income (HUD 30%)
+          {`Required income (HUD 30%)${lensSuffix}`}
         </text>
       </g>
     </svg>

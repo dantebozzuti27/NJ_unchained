@@ -15,6 +15,21 @@ interface RouteParams {
   id: string;
 }
 
+type Lens = "nominal" | "real";
+
+/**
+ * Parse the `?lens=` query string into our discriminated lens type.
+ * Defaults to "real" because the substrate-honest narrative for a
+ * "collapse curve" is the CPI-deflated lens: nominal-dollar plots
+ * understate the structural-affordability erosion by letting headline
+ * inflation push both lines up in parallel. We surface both lenses
+ * via a toggle so the reader can audit the deflation arithmetic.
+ */
+function parseLens(raw: string | string[] | undefined): Lens {
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  return v === "nominal" ? "nominal" : "real";
+}
+
 export const metadata = {
   title: "Collapse Curve — NJ Unchained",
   description:
@@ -24,10 +39,13 @@ export const metadata = {
 
 export default async function CollapseCurvePage({
   params,
+  searchParams,
 }: {
   params: Promise<RouteParams>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const { id: rawId } = await params;
+  const [{ id: rawId }, sp] = await Promise.all([params, searchParams]);
+  const lens: Lens = parseLens(sp.lens);
   const reachable = await isDbReachable();
   if (!reachable.reachable) {
     return (
@@ -65,18 +83,52 @@ export default async function CollapseCurvePage({
     );
   }
 
-  const points = data.series.map((p) => ({
-    year: p.year,
-    median_income: p.median_income_nominal,
-    required_income: p.required_income_hud_30pct,
-  }));
+  // The real-dollar lens is only viable when the CPI substrate is loaded
+  // (mig 085's f_real_dollar_base_year returns NULL on empty CPI).
+  // If the caller asked for ?lens=real but we cannot deliver, we fall
+  // back to nominal silently rather than mislabel real-dollar values.
+  const realDollarsBaseYear = data.real_dollar_base_year;
+  const effectiveLens: Lens =
+    lens === "real" && realDollarsBaseYear != null ? "real" : "nominal";
+
+  const points = data.series.map((p) =>
+    effectiveLens === "real"
+      ? {
+          year: p.year,
+          median_income: p.median_income_real,
+          required_income: p.required_income_hud_30pct_real,
+        }
+      : {
+          year: p.year,
+          median_income: p.median_income_nominal,
+          required_income: p.required_income_hud_30pct,
+        },
+  );
   const plottedYears = points
     .filter((p) => p.median_income != null && p.required_income != null)
     .map((p) => p.year);
 
-  const headlineHeadroom = data.latest?.hud_headroom_dollars ?? null;
-  const headlineRatio = data.latest?.hud_required_to_actual_ratio ?? null;
+  // Headline numbers also pivot on the active lens. The headroom flag
+  // (color / "shortfall" copy) is computed from the active lens to keep
+  // the narrative coherent: if the chart shows the real-dollar gap,
+  // the headline metric must too.
+  const headlineHeadroom =
+    effectiveLens === "real"
+      ? data.latest?.hud_headroom_dollars_real ?? null
+      : data.latest?.hud_headroom_dollars ?? null;
   const isUnaffordable = headlineHeadroom != null && headlineHeadroom < 0;
+  const headlineMedianIncome =
+    effectiveLens === "real"
+      ? data.latest?.median_income_real ?? null
+      : data.latest?.median_income_nominal ?? null;
+  const headlineRequiredIncome =
+    effectiveLens === "real"
+      ? data.latest?.required_income_hud_30pct_real ?? null
+      : data.latest?.required_income_hud_30pct ?? null;
+  const lensLabel =
+    effectiveLens === "real" && realDollarsBaseYear != null
+      ? `${realDollarsBaseYear} dollars`
+      : "nominal dollars";
 
   return (
     <div className="space-y-6">
@@ -115,6 +167,16 @@ export default async function CollapseCurvePage({
           {data.profile.qualifying_children} qualifying child(ren).
         </p>
 
+        {/* Lens switcher: nominal vs real-dollar (CPI-deflated). Server-
+            rendered links so there is zero client-side JS; the
+            ?lens=... param round-trips the choice. The active button is
+            visually distinct; the inactive button is a link. */}
+        <LensSwitcher
+          countyId={data.county_id}
+          activeLens={effectiveLens}
+          realDollarBaseYear={realDollarsBaseYear}
+        />
+
         {data.latest != null ? (
           <dl className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
             <KV
@@ -122,17 +184,17 @@ export default async function CollapseCurvePage({
               value={String(data.latest_year)}
             />
             <KV
-              label="Median income (actual)"
-              value={fmtUsd(data.latest.median_income_nominal)}
+              label={`Median income (actual, ${lensLabel})`}
+              value={fmtUsd(headlineMedianIncome)}
               tone="info"
             />
             <KV
-              label="Required income (HUD 30%)"
-              value={fmtUsd(data.latest.required_income_hud_30pct)}
+              label={`Required income (HUD 30%, ${lensLabel})`}
+              value={fmtUsd(headlineRequiredIncome)}
               tone="warn"
             />
             <KV
-              label={isUnaffordable ? "Income shortfall" : "Income headroom"}
+              label={`${isUnaffordable ? "Income shortfall" : "Income headroom"} (${lensLabel})`}
               value={
                 headlineHeadroom == null
                   ? "—"
@@ -197,7 +259,12 @@ export default async function CollapseCurvePage({
 
       <section className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5">
         <div className="mb-1 flex items-baseline justify-between">
-          <h2 className="font-medium">The Collapse Curve</h2>
+          <h2 className="font-medium">
+            The Collapse Curve{" "}
+            <span className="text-xs font-normal text-zinc-500">
+              ({lensLabel})
+            </span>
+          </h2>
           <div className="text-xs text-zinc-500">
             <span className="font-mono">
               formula version: {data.formula_version}
@@ -207,14 +274,33 @@ export default async function CollapseCurvePage({
         <p className="text-xs text-zinc-500 dark:text-zinc-500 mb-3">
           When the red line (required income) climbs above the blue line
           (actual median), housing has become structurally unaffordable
-          for the median household. The shaded area is the dollar gap.
+          for the median household. The shaded area is the dollar gap.{" "}
+          {effectiveLens === "real" ? (
+            <span>
+              All values are CPI-deflated to{" "}
+              <span className="font-mono">{realDollarsBaseYear}</span>{" "}
+              dollars via the BLS CPI-U headline annual series so
+              cross-year comparisons isolate structural-affordability
+              erosion from headline inflation.
+            </span>
+          ) : (
+            <span>
+              Values are in nominal year-of-observation dollars; each
+              year&apos;s pair is internally comparable, but cross-year
+              trends conflate housing-cost growth with general
+              inflation. Flip to the real-dollar lens above to isolate
+              the structural component.
+            </span>
+          )}
         </p>
         <div className="overflow-x-auto">
           <CollapseCurve
             points={points}
             width={720}
             height={380}
-            title={`${data.county_name} Collapse Curve`}
+            title={`${data.county_name} Collapse Curve (${lensLabel})`}
+            lens={effectiveLens}
+            realDollarsBaseYear={realDollarsBaseYear}
           />
         </div>
         {plottedYears.length > 0 && (
@@ -226,29 +312,49 @@ export default async function CollapseCurvePage({
 
       {data.latest != null && (
         <section className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5">
-          <h2 className="font-medium mb-3">All three required-income metrics</h2>
+          <h2 className="font-medium mb-3">
+            All three required-income metrics{" "}
+            <span className="text-xs font-normal text-zinc-500">
+              ({lensLabel})
+            </span>
+          </h2>
           <p className="text-xs text-zinc-500 mb-3">
             The curve plots the HUD definition (the cited, comparable
             standard). Two stricter definitions are also computed and
-            shown here for the same household profile.
+            shown here for the same household profile. All three pivot
+            on the active dollar lens.
           </p>
           <dl className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
             <Metric
               label="HUD 30% of gross"
-              value={fmtUsd(data.latest.required_income_hud_30pct)}
+              value={fmtUsd(
+                effectiveLens === "real"
+                  ? data.latest.required_income_hud_30pct_real
+                  : data.latest.required_income_hud_30pct,
+              )}
               note="PITI ÷ 0.30. The published HUD CHAS cost-burden definition."
             />
             <Metric
               label="Lender style (30% of take-home)"
-              value={fmtUsd(data.latest.required_income_post_tax_30pct)}
+              value={fmtUsd(
+                effectiveLens === "real"
+                  ? data.latest.required_income_post_tax_30pct_real
+                  : data.latest.required_income_post_tax_30pct,
+              )}
               note="PITI ≤ 30% of (gross − federal − NJ − FICA). What underwriters actually model."
             />
             <Metric
               label="Strict (housing + tax ≤ 30% of gross)"
               value={
-                data.latest.required_income_full_burden_30pct == null
+                (effectiveLens === "real"
+                  ? data.latest.required_income_full_burden_30pct_real
+                  : data.latest.required_income_full_burden_30pct) == null
                   ? "Unreachable"
-                  : fmtUsd(data.latest.required_income_full_burden_30pct)
+                  : fmtUsd(
+                      effectiveLens === "real"
+                        ? data.latest.required_income_full_burden_30pct_real
+                        : data.latest.required_income_full_burden_30pct,
+                    )
               }
               note={
                 data.latest.required_income_full_burden_30pct == null
@@ -434,7 +540,95 @@ function KV({
   );
 }
 
-function fmtUsd(n: number | null): string {
+function fmtUsd(n: number | null | undefined): string {
   if (n == null) return "—";
   return `$${Math.round(n).toLocaleString("en-US")}`;
+}
+
+/**
+ * Two-state lens switcher.
+ *
+ * Server-rendered <Link>s so the toggle round-trips through the URL
+ * (?lens=nominal | ?lens=real), zero client JS. The active state is a
+ * styled div; the inactive is a link. This matches the pattern used
+ * by the `/risk?scope=...` switcher and keeps the collapse page
+ * RSC-friendly.
+ *
+ * When `realDollarBaseYear` is NULL (CPI substrate not loaded), the
+ * real-dollar option is rendered as a disabled-looking ghost button
+ * that explains the substrate gap inline -- substrate-honest, the UI
+ * tells the reader exactly why the lens is unavailable.
+ */
+function LensSwitcher({
+  countyId,
+  activeLens,
+  realDollarBaseYear,
+}: {
+  countyId: string;
+  activeLens: Lens;
+  realDollarBaseYear: number | null;
+}) {
+  const base = `/housing/${encodeURIComponent(countyId)}/collapse`;
+  const realAvailable = realDollarBaseYear != null;
+  return (
+    <div
+      className="mt-4 flex flex-wrap items-center gap-2 text-xs"
+      role="group"
+      aria-label="Dollar lens"
+    >
+      <span className="uppercase tracking-wider text-zinc-500">
+        Dollar lens:
+      </span>
+      <LensButton
+        active={activeLens === "real"}
+        disabled={!realAvailable}
+        href={`${base}?lens=real`}
+        label={
+          realAvailable
+            ? `Real (${realDollarBaseYear} dollars)`
+            : "Real (CPI substrate unloaded)"
+        }
+      />
+      <LensButton
+        active={activeLens === "nominal"}
+        href={`${base}?lens=nominal`}
+        label="Nominal (year-of-observation dollars)"
+      />
+    </div>
+  );
+}
+
+function LensButton({
+  active,
+  disabled = false,
+  href,
+  label,
+}: {
+  active: boolean;
+  disabled?: boolean;
+  href: string;
+  label: string;
+}) {
+  if (active) {
+    return (
+      <span className="rounded-md border border-zinc-900 bg-zinc-900 px-2 py-1 font-mono text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900">
+        {label}
+      </span>
+    );
+  }
+  if (disabled) {
+    return (
+      <span className="rounded-md border border-dashed border-zinc-300 px-2 py-1 font-mono text-zinc-400 dark:border-zinc-700 dark:text-zinc-600">
+        {label}
+      </span>
+    );
+  }
+  return (
+    <Link
+      href={href}
+      className="rounded-md border border-zinc-300 px-2 py-1 font-mono text-zinc-700 hover:border-zinc-500 dark:border-zinc-700 dark:text-zinc-300 dark:hover:border-zinc-500"
+    >
+      {label}
+    </Link>
+  );
 }

@@ -670,6 +670,28 @@ export type AffordabilityPoint = {
   hud_headroom_dollars: number | null;
   /** hud_required / actual_median. >1 means median is short. */
   hud_required_to_actual_ratio: number | null;
+  // ----------------------------------------------------------------
+  // CPI-deflated counterparts (real-dollar lens).
+  //
+  // Every nominal-dollar column above has a `_real` counterpart that
+  // expresses the same observation in base-year dollars per
+  // derived.v_affordability_gap_real (mig 085, formula version
+  // 2.0.0-real-dollar-baseline-v1). NULL when CPI substrate is missing
+  // for either p_cycle's source year OR the base year -- substrate-
+  // honest, no silent fallback.
+  // ----------------------------------------------------------------
+  /** PITI annual in real-dollar base year. */
+  piti_annual_real: number | null;
+  /** Median household income in real-dollar base year. */
+  median_income_real: number | null;
+  /** HUD required income in real-dollar base year. */
+  required_income_hud_30pct_real: number | null;
+  /** Post-tax required income in real-dollar base year. */
+  required_income_post_tax_30pct_real: number | null;
+  /** Full-burden required income in real-dollar base year. */
+  required_income_full_burden_30pct_real: number | null;
+  /** Income headroom (median - required) in real-dollar base year. */
+  hud_headroom_dollars_real: number | null;
 };
 
 export type CountyAffordabilityGap = CountyRow & {
@@ -679,7 +701,10 @@ export type CountyAffordabilityGap = CountyRow & {
   latest_year: number | null;
   /** Headline numbers for the latest year. */
   latest:
-    | (AffordabilityPoint & { home_price: number | null })
+    | (AffordabilityPoint & {
+        home_price: number | null;
+        home_price_real: number | null;
+      })
     | null;
   /** Profile used by the per-county view. */
   profile: {
@@ -687,6 +712,15 @@ export type CountyAffordabilityGap = CountyRow & {
     dependents: number;
     qualifying_children: number;
   };
+  /**
+   * Real-dollar base year per derived.f_real_dollar_base_year() at the
+   * time the query ran. The substrate-honest answer to "what base year
+   * are these real-dollar values in?" -- spec §3.4 mandates 2026 but
+   * BLS publishes CPI-U M13 with ~12-month lag, so until 2026 CPI lands
+   * this is the latest year present in derived.cpi_u_headline_annual.
+   * NULL when CPI substrate is empty.
+   */
+  real_dollar_base_year: number | null;
   /** Substrate-honest data-availability summary for the methodology box. */
   coverage: {
     dca_year_min: number | null;
@@ -724,27 +758,48 @@ export async function getCountyAffordabilityGap(
   const c = countyRows[0];
   const fips = String(c.county_fips);
 
-  // Read the headline view directly. The view returns one row per
-  // (county_fips, year) where DCA + ACS5 substrate exists, with the
-  // tax-dependent columns NULL for unseeded tax years.
+  // Read the real-dollar headline view -- it carries BOTH the nominal
+  // and CPI-deflated counterparts in a single row, plus the base year
+  // used for deflation. The page renders both lenses and we want them
+  // to come from a SINGLE round-trip so a stale base-year-vs-rows mismatch
+  // is structurally impossible (mig 085 derived.v_affordability_gap_real).
+  //
+  // v_affordability_gap_real does NOT carry profile metadata or the
+  // formula_version of the underlying v_affordability_gap (its own
+  // formula_version is "2.0.0-real-dollar-baseline-v1"); we LEFT JOIN
+  // back to the source view for those two fields so the UI banner
+  // continues to display the source-tier formula_version.
   const gapRows = (await sql`
     SELECT
-      year::INT                                  AS year,
-      home_price::FLOAT8                         AS home_price,
-      median_income_nominal::FLOAT8              AS median_income_nominal,
-      piti_annual::FLOAT8                        AS piti_annual,
-      required_income_hud_30pct::FLOAT8          AS required_income_hud_30pct,
-      required_income_post_tax_30pct::FLOAT8     AS required_income_post_tax_30pct,
-      required_income_full_burden_30pct::FLOAT8  AS required_income_full_burden_30pct,
-      hud_headroom_dollars::FLOAT8               AS hud_headroom_dollars,
-      hud_required_to_actual_ratio::FLOAT8       AS hud_required_to_actual_ratio,
-      profile_filing_status                      AS profile_filing_status,
-      profile_dependents                         AS profile_dependents,
-      profile_qualifying_children                AS profile_qualifying_children,
-      formula_version                            AS formula_version
-    FROM derived.v_affordability_gap
-    WHERE county_fips = ${fips}
-    ORDER BY year
+      r.year::INT                                    AS year,
+      r.real_dollar_base_year::INT                   AS real_dollar_base_year,
+      r.home_price_nominal::FLOAT8                   AS home_price,
+      r.home_price_real::FLOAT8                      AS home_price_real,
+      r.median_income_nominal::FLOAT8                AS median_income_nominal,
+      r.median_income_real::FLOAT8                   AS median_income_real,
+      r.piti_annual_nominal::FLOAT8                  AS piti_annual,
+      r.piti_annual_real::FLOAT8                     AS piti_annual_real,
+      r.required_income_hud_30pct_nominal::FLOAT8    AS required_income_hud_30pct,
+      r.required_income_hud_30pct_real::FLOAT8       AS required_income_hud_30pct_real,
+      r.required_income_post_tax_30pct_nominal::FLOAT8
+                                                     AS required_income_post_tax_30pct,
+      r.required_income_post_tax_30pct_real::FLOAT8  AS required_income_post_tax_30pct_real,
+      r.required_income_full_burden_30pct_nominal::FLOAT8
+                                                     AS required_income_full_burden_30pct,
+      r.required_income_full_burden_30pct_real::FLOAT8
+                                                     AS required_income_full_burden_30pct_real,
+      r.hud_headroom_dollars_nominal::FLOAT8         AS hud_headroom_dollars,
+      r.hud_headroom_dollars_real::FLOAT8            AS hud_headroom_dollars_real,
+      r.hud_required_to_actual_ratio::FLOAT8         AS hud_required_to_actual_ratio,
+      v.profile_filing_status                        AS profile_filing_status,
+      v.profile_dependents                           AS profile_dependents,
+      v.profile_qualifying_children                  AS profile_qualifying_children,
+      v.formula_version                              AS formula_version
+    FROM derived.v_affordability_gap_real r
+    LEFT JOIN derived.v_affordability_gap v
+      ON v.county_fips = r.county_fips AND v.year = r.year
+    WHERE r.county_fips = ${fips}
+    ORDER BY r.year
   `) as Record<string, unknown>[];
 
   // Coverage block -- the methodology box explains exactly which
@@ -813,6 +868,26 @@ export async function getCountyAffordabilityGap(
       r.hud_required_to_actual_ratio == null
         ? null
         : Number(r.hud_required_to_actual_ratio),
+    piti_annual_real:
+      r.piti_annual_real == null ? null : Number(r.piti_annual_real),
+    median_income_real:
+      r.median_income_real == null ? null : Number(r.median_income_real),
+    required_income_hud_30pct_real:
+      r.required_income_hud_30pct_real == null
+        ? null
+        : Number(r.required_income_hud_30pct_real),
+    required_income_post_tax_30pct_real:
+      r.required_income_post_tax_30pct_real == null
+        ? null
+        : Number(r.required_income_post_tax_30pct_real),
+    required_income_full_burden_30pct_real:
+      r.required_income_full_burden_30pct_real == null
+        ? null
+        : Number(r.required_income_full_burden_30pct_real),
+    hud_headroom_dollars_real:
+      r.hud_headroom_dollars_real == null
+        ? null
+        : Number(r.hud_headroom_dollars_real),
   }));
 
   // The "plotted" years are those with both actual median income AND
@@ -851,6 +926,15 @@ export async function getCountyAffordabilityGap(
         }
       : { filing_status: "mfj", dependents: 1, qualifying_children: 1 };
 
+  // The real-dollar base year is constant across every row (it's the
+  // output of a STABLE scalar function evaluated once per query in the
+  // view). We read it from row 0 and tolerate an empty result set (the
+  // base year is meaningless without rows).
+  const realDollarBaseYear =
+    gapRows.length > 0 && gapRows[0].real_dollar_base_year != null
+      ? Number(gapRows[0].real_dollar_base_year)
+      : null;
+
   return {
     county_id: String(c.county_id),
     county_fips: fips,
@@ -863,9 +947,14 @@ export async function getCountyAffordabilityGap(
             ...latest,
             home_price:
               latestRow?.home_price == null ? null : Number(latestRow.home_price),
+            home_price_real:
+              latestRow?.home_price_real == null
+                ? null
+                : Number(latestRow.home_price_real),
           }
         : null,
     profile,
+    real_dollar_base_year: realDollarBaseYear,
     coverage: {
       dca_year_min: cov.dca_min == null ? null : Number(cov.dca_min),
       dca_year_max: cov.dca_max == null ? null : Number(cov.dca_max),
