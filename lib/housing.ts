@@ -222,6 +222,23 @@ export type CountyDetail = CountyRow & {
      *  Negative = household earns less than HUD threshold. THE headline. */
     hud_headroom_dollars_real: number;
   } | null;
+  /**
+   * Nominal-dollar (un-deflated) affordability headline for the same
+   * (county, year) pair as `real_dollar`. Sibling lens to support an
+   * explicit nominal/real toggle on /housing/[id] without paying for
+   * a second DB round-trip. Substrate-honest: when CPI substrate is
+   * loaded both lenses are present; when it isn't, both are NULL.
+   * Sourced from the same v_affordability_gap_real view as the real
+   * lens (it carries both via the _nominal suffix columns).
+   */
+  nominal_dollar: {
+    year: number;
+    home_price_nominal: number;
+    median_income_nominal: number;
+    piti_annual_nominal: number;
+    required_income_hud_30pct_nominal: number;
+    hud_headroom_dollars_nominal: number;
+  } | null;
 };
 
 export async function listNjCounties(): Promise<CountyRow[]> {
@@ -505,7 +522,14 @@ export async function getCountyDetail(
            required_income_hud_30pct_real::FLOAT8
                        AS required_income_hud_30pct_real,
            hud_headroom_dollars_real::FLOAT8
-                       AS hud_headroom_dollars_real
+                       AS hud_headroom_dollars_real,
+           home_price_nominal::FLOAT8 AS home_price_nominal,
+           median_income_nominal::FLOAT8 AS median_income_nominal,
+           piti_annual_nominal::FLOAT8 AS piti_annual_nominal,
+           required_income_hud_30pct_nominal::FLOAT8
+                       AS required_income_hud_30pct_nominal,
+           hud_headroom_dollars_nominal::FLOAT8
+                       AS hud_headroom_dollars_nominal
     FROM derived.v_affordability_gap_real
     WHERE county_fips = ${fips}
       AND home_price_real IS NOT NULL
@@ -528,6 +552,36 @@ export async function getCountyDetail(
           ),
           hud_headroom_dollars_real: Number(
             realDollarRows[0].hud_headroom_dollars_real,
+          ),
+        }
+      : null;
+
+  // Nominal-dollar sibling lens. Comes from the SAME row as the real
+  // lens (v_affordability_gap_real carries both via _nominal columns),
+  // so when real is present nominal is also present and they refer to
+  // the same county-year. When CPI substrate is absent (real null) the
+  // nominal lens may still be populated -- but our SQL query gates on
+  // real-dollar NOT NULL above, so both lenses are tied together for
+  // substrate-honest "either both or neither" presentation. Future
+  // refactor: relax the WHERE clause + carry nominal independently
+  // when CPI is unavailable so the nominal lens degrades gracefully.
+  const nominalDollar =
+    realDollarRows.length > 0 &&
+    realDollarRows[0].home_price_nominal != null &&
+    realDollarRows[0].median_income_nominal != null &&
+    realDollarRows[0].required_income_hud_30pct_nominal != null
+      ? {
+          year: Number(realDollarRows[0].year),
+          home_price_nominal: Number(realDollarRows[0].home_price_nominal),
+          median_income_nominal: Number(
+            realDollarRows[0].median_income_nominal,
+          ),
+          piti_annual_nominal: Number(realDollarRows[0].piti_annual_nominal),
+          required_income_hud_30pct_nominal: Number(
+            realDollarRows[0].required_income_hud_30pct_nominal,
+          ),
+          hud_headroom_dollars_nominal: Number(
+            realDollarRows[0].hud_headroom_dollars_nominal,
           ),
         }
       : null;
@@ -555,6 +609,7 @@ export async function getCountyDetail(
     },
     cross_source: crossSource,
     real_dollar: realDollar,
+    nominal_dollar: nominalDollar,
   };
 }
 

@@ -24,12 +24,32 @@ interface RouteParams {
   id: string;
 }
 
+type Lens = "nominal" | "real";
+
+/**
+ * Parse the `?lens=` URL parameter. Defaults to "real" -- the substrate-
+ * honest collapse-narrative lens (real dollars hold purchasing power
+ * constant across years, the only dimension under which "the median
+ * paycheck no longer buys the median home" is a verifiable claim).
+ * Falls back gracefully to "nominal" only when CPI substrate is
+ * unavailable (handled by callers via `effectiveLens` selection).
+ */
+function parseLens(raw: string | string[] | undefined): Lens {
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  if (v === "nominal") return "nominal";
+  return "real";
+}
+
 export default async function CountyDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<RouteParams>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { id: rawId } = await params;
+  const sp = await searchParams;
+  const lens = parseLens(sp.lens);
   const reachable = await isDbReachable();
   if (!reachable.reachable) {
     return (
@@ -85,6 +105,58 @@ export default async function CountyDetailPage({
 
   const tier = burdenTier(detail.current.burden_ratio, bands);
 
+  // Lens fallback: if user requested real but CPI substrate is absent
+  // (real_dollar null), silently fall back to nominal. If user
+  // requested nominal but only the joined-with-real row is present
+  // (nominal_dollar null), fall back to real. This matches Phase H's
+  // collapse-curve behavior -- always render the available lens.
+  const effectiveLens: Lens =
+    lens === "real"
+      ? detail.real_dollar != null
+        ? "real"
+        : "nominal"
+      : detail.nominal_dollar != null
+        ? "nominal"
+        : "real";
+
+  // Pick the headline figures for the active lens. Each of these is
+  // null if the corresponding lens object is null; we already
+  // accounted for fallback above so at least ONE lens is populated
+  // when ANY housing-burden substrate is loaded.
+  const headlineHeadroom: number | null =
+    effectiveLens === "real"
+      ? (detail.real_dollar?.hud_headroom_dollars_real ?? null)
+      : (detail.nominal_dollar?.hud_headroom_dollars_nominal ?? null);
+  const headlineHomePrice: number | null =
+    effectiveLens === "real"
+      ? (detail.real_dollar?.home_price_real ?? null)
+      : (detail.nominal_dollar?.home_price_nominal ?? null);
+  const headlineMedianIncome: number | null =
+    effectiveLens === "real"
+      ? (detail.real_dollar?.median_income_real ?? null)
+      : (detail.nominal_dollar?.median_income_nominal ?? null);
+  const headlineRequiredIncome: number | null =
+    effectiveLens === "real"
+      ? (detail.real_dollar?.required_income_hud_30pct_real ?? null)
+      : (detail.nominal_dollar?.required_income_hud_30pct_nominal ?? null);
+  const headlinePiti: number | null =
+    effectiveLens === "real"
+      ? (detail.real_dollar?.piti_annual_real ?? null)
+      : (detail.nominal_dollar?.piti_annual_nominal ?? null);
+  const headlineYear: number | null =
+    effectiveLens === "real"
+      ? (detail.real_dollar?.year ?? null)
+      : (detail.nominal_dollar?.year ?? null);
+  const baseYear = detail.real_dollar?.base_year ?? null;
+
+  // Label suffix for KV grid columns: "(2024 $)" for real lens,
+  // "(nominal $)" for nominal lens. Substrate-honest: the user always
+  // knows which denomination they're looking at.
+  const lensSuffix: string =
+    effectiveLens === "real" && baseYear != null
+      ? `${baseYear} $`
+      : "nominal $";
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -95,7 +167,7 @@ export default async function CountyDetailPage({
           ← Back to housing overview
         </Link>
         <Link
-          href={`/housing/${encodeURIComponent(detail.county_id)}/collapse`}
+          href={`/housing/${encodeURIComponent(detail.county_id)}/collapse?lens=${effectiveLens}`}
           className="rounded-md border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950 px-3 py-1.5 text-xs font-medium text-red-800 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900 transition-colors"
           title="The Collapse Curve: actual median income vs income required to afford the median home"
         >
@@ -116,23 +188,24 @@ export default async function CountyDetailPage({
               {detail.county_id}
             </div>
           </div>
-          {detail.real_dollar != null ? (
+          {headlineHeadroom != null && headlineYear != null ? (
             <div className="text-right">
               <div
                 className={`font-mono text-4xl font-bold leading-none ${
-                  detail.real_dollar.hud_headroom_dollars_real >= 0
+                  headlineHeadroom >= 0
                     ? "text-blue-600 dark:text-blue-400"
                     : "text-rose-600 dark:text-rose-400"
                 }`}
               >
-                {detail.real_dollar.hud_headroom_dollars_real >= 0 ? "+" : "−"}
-                {fmtUsdShort(
-                  Math.abs(detail.real_dollar.hud_headroom_dollars_real),
-                )}
+                {headlineHeadroom >= 0 ? "+" : "−"}
+                {fmtUsdShort(Math.abs(headlineHeadroom))}
               </div>
               <div className="mt-1 text-xs uppercase tracking-wider text-zinc-500">
-                Affordability gap ({detail.real_dollar.year}, in{" "}
-                {detail.real_dollar.base_year} dollars)
+                Affordability gap ({headlineYear},{" "}
+                {effectiveLens === "real" && baseYear != null
+                  ? `in ${baseYear} dollars`
+                  : "nominal dollars"}
+                )
               </div>
               <div className="mt-0.5 text-[11px] text-zinc-500">
                 median income − HUD-required income
@@ -155,23 +228,32 @@ export default async function CountyDetailPage({
           )}
         </div>
 
-        {detail.real_dollar != null && (
+        <LensSwitcher
+          countyId={detail.county_id}
+          activeLens={effectiveLens}
+          requestedLens={lens}
+          realAvailable={detail.real_dollar != null}
+          nominalAvailable={detail.nominal_dollar != null}
+          baseYear={baseYear}
+        />
+
+        {headlineHeadroom != null && (
           <dl className="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
             <KV
-              label={`Median home (${detail.real_dollar.base_year} $)`}
-              value={fmtUsd(detail.real_dollar.home_price_real)}
+              label={`Median home (${lensSuffix})`}
+              value={fmtUsd(headlineHomePrice)}
             />
             <KV
-              label={`Median income (${detail.real_dollar.base_year} $)`}
-              value={fmtUsd(detail.real_dollar.median_income_real)}
+              label={`Median income (${lensSuffix})`}
+              value={fmtUsd(headlineMedianIncome)}
             />
             <KV
-              label={`Required income @30% (${detail.real_dollar.base_year} $)`}
-              value={fmtUsd(detail.real_dollar.required_income_hud_30pct_real)}
+              label={`Required income @30% (${lensSuffix})`}
+              value={fmtUsd(headlineRequiredIncome)}
             />
             <KV
-              label={`Annual PITI (${detail.real_dollar.base_year} $)`}
-              value={fmtUsd(detail.real_dollar.piti_annual_real)}
+              label={`Annual PITI (${lensSuffix})`}
+              value={fmtUsd(headlinePiti)}
             />
           </dl>
         )}
@@ -310,7 +392,110 @@ export default async function CountyDetailPage({
           are independent methodologies; the cross-check section shows
           how much they agree for this county.
         </p>
+        {headlineHeadroom != null && (
+          <p className="mt-3 text-zinc-700 dark:text-zinc-300">
+            The headline figures above are in{" "}
+            {effectiveLens === "real" && baseYear != null ? (
+              <>
+                <span className="font-semibold">{baseYear} dollars</span>{" "}
+                (CPI-deflated). This holds purchasing power constant
+                across years -- the only lens under which the question
+                &ldquo;has the median paycheck kept up with the median
+                home?&rdquo; has a verifiable answer. Switch to the
+                nominal lens above to see the un-deflated numbers as they
+                appeared in the original source year.
+              </>
+            ) : (
+              <>
+                <span className="font-semibold">nominal dollars</span> (as
+                they appeared in the original source year, NOT adjusted
+                for inflation). A nominal-dollar gap of $X in 2024
+                represents less purchasing power than the same $X gap in
+                2010. Switch to the real-dollar lens above for an
+                inflation-adjusted comparison.
+              </>
+            )}
+          </p>
+        )}
       </section>
+    </div>
+  );
+}
+
+function LensSwitcher({
+  countyId,
+  activeLens,
+  requestedLens,
+  realAvailable,
+  nominalAvailable,
+  baseYear,
+}: {
+  countyId: string;
+  activeLens: Lens;
+  requestedLens: Lens;
+  realAvailable: boolean;
+  nominalAvailable: boolean;
+  baseYear: number | null;
+}) {
+  const base = `/housing/${encodeURIComponent(countyId)}`;
+  const realLabel =
+    realAvailable && baseYear != null
+      ? `Real (${baseYear} $)`
+      : "Real (CPI substrate unloaded)";
+  const nominalLabel = nominalAvailable
+    ? "Nominal"
+    : "Nominal (substrate unloaded)";
+
+  // If the user explicitly requested a lens that isn't available, show
+  // a one-line warning explaining the silent fallback. Substrate-
+  // honest: never silently misrepresent the active lens.
+  const fellBack = requestedLens !== activeLens;
+
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-zinc-200 dark:border-zinc-800 pt-3 text-xs">
+      <span className="uppercase tracking-wider text-zinc-500">
+        Dollar lens
+      </span>
+      <div className="flex rounded-md border border-zinc-300 dark:border-zinc-700 overflow-hidden">
+        <Link
+          href={`${base}?lens=real`}
+          className={`px-3 py-1.5 text-xs font-medium ${
+            activeLens === "real"
+              ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900"
+              : "bg-white dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800"
+          } ${!realAvailable ? "opacity-50" : ""}`}
+          aria-disabled={!realAvailable}
+          title={
+            realAvailable
+              ? "CPI-deflated; purchasing-power-constant across years"
+              : "CPI substrate not loaded; falls back to nominal"
+          }
+        >
+          {realLabel}
+        </Link>
+        <Link
+          href={`${base}?lens=nominal`}
+          className={`border-l border-zinc-300 dark:border-zinc-700 px-3 py-1.5 text-xs font-medium ${
+            activeLens === "nominal"
+              ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900"
+              : "bg-white dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800"
+          } ${!nominalAvailable ? "opacity-50" : ""}`}
+          aria-disabled={!nominalAvailable}
+          title={
+            nominalAvailable
+              ? "Un-deflated; values as they appeared in the source year"
+              : "Substrate unloaded; falls back to real"
+          }
+        >
+          {nominalLabel}
+        </Link>
+      </div>
+      {fellBack && (
+        <span className="font-mono text-amber-700 dark:text-amber-300">
+          requested {requestedLens}, falling back to {activeLens}{" "}
+          ({requestedLens === "real" ? "no CPI" : "no nominal"} substrate)
+        </span>
+      )}
     </div>
   );
 }
