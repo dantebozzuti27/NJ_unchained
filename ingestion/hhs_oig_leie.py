@@ -550,8 +550,40 @@ def load_to_postgres(
         # column order; on conflict bump last_seen_at + refresh
         # vintage_month and provenance so the latest pull's metadata
         # wins for subsequent active-vs-historical filtering.
+        #
+        # WHY DISTINCT ON (record_hash):
+        #   LEIE UPDATED.csv contains a small number of intra-batch
+        #   duplicate rows (~25 hash collisions / ~51 rows out of ~83K
+        #   in the May 2026 vintage). The duplicates have IDENTICAL
+        #   content for every column (same EXCLDATE, EXCLTYPE, REINDATE,
+        #   WAIVERDATE, NPI, name, address) -- they are a genuine HHS
+        #   publishing quirk where the same exclusion row appears
+        #   twice in the bulk download. Without dedup the UPSERT
+        #   raises CardinalityViolation ("ON CONFLICT DO UPDATE
+        #   command cannot affect row a second time") because two
+        #   staging rows hit the same target record_hash within one
+        #   statement.
+        #
+        #   We dedupe staging via DISTINCT ON (record_hash) ORDER BY
+        #   record_hash, ctid -- ctid is the deterministic physical
+        #   row identifier within a transaction, so re-runs of the
+        #   same vintage pick the same surviving row. Since the
+        #   duplicates are pixel-identical, the choice is immaterial
+        #   to downstream consumers; this is purely a Postgres ON
+        #   CONFLICT mechanics workaround, not an information loss.
         cur.execute(
             """
+            WITH deduped AS (
+                SELECT DISTINCT ON (record_hash)
+                    record_hash,
+                    lastname, firstname, midname, busname,
+                    general, specialty, upin, npi, dob,
+                    address, city, state, zip,
+                    excltype, excldate, reindate, waiverdate, wvrstate,
+                    vintage_month, source_url, source_sha256
+                FROM leie_staging
+                ORDER BY record_hash, ctid
+            )
             INSERT INTO raw.hhs_oig_leie (
                 record_hash,
                 lastname, firstname, midname, busname,
@@ -567,7 +599,7 @@ def load_to_postgres(
                 address, city, state, zip,
                 excltype, excldate, reindate, waiverdate, wvrstate,
                 vintage_month, source_url, source_sha256
-            FROM leie_staging
+            FROM deduped
             ON CONFLICT (record_hash) DO UPDATE SET
                 last_seen_at  = now(),
                 vintage_month = EXCLUDED.vintage_month,

@@ -478,6 +478,68 @@ def test_idempotent_reload_is_a_no_op_on_row_count(
 
 
 @pytest.mark.live_pg
+def test_intra_batch_duplicate_rows_are_deduped_via_distinct_on(
+    leie_db: psycopg.Connection, tmp_path: Path,
+) -> None:
+    """LEIE source CSV occasionally publishes pixel-identical duplicate rows.
+
+    In the May 2026 vintage there are ~25 such hash collisions
+    (~51 source rows out of ~83K). Both copies have IDENTICAL content
+    for every column (same EXCLDATE, EXCLTYPE, REINDATE, WAIVERDATE,
+    NPI, name, address). Without dedup the loader raises:
+
+        psycopg.errors.CardinalityViolation: ON CONFLICT DO UPDATE
+        command cannot affect row a second time
+
+    The loader handles this by `SELECT DISTINCT ON (record_hash) ...
+    ORDER BY record_hash, ctid` in the staging-to-raw INSERT path.
+    This test pins that behavior so a future "simplification" of the
+    UPSERT cannot regress to CardinalityViolation against real LEIE.
+
+    Substrate-honesty: deduping intra-batch is information-preserving
+    because the duplicates are byte-identical -- there is no field
+    where the two copies disagree.
+    """
+    rows = [dict(r) for r in _FOUR_ROWS]
+    # Append an exact duplicate of row 0 (DOE).
+    rows.append(dict(_FOUR_ROWS[0]))
+    # And a second duplicate of row 2 (ACME HOME HEALTH LLC).
+    rows.append(dict(_FOUR_ROWS[2]))
+    assert len(rows) == 6
+
+    fetch = _write_synth_leie(tmp_path, rows)
+    parsed = parse_leie_csv(fetch)
+    # parser does not dedupe; raw row count is 6
+    assert parsed.n_rows == 6
+
+    # Loader MUST NOT raise -- DISTINCT ON collapses the 2 dups.
+    n = load_to_postgres(parsed, leie_db, vintage_month="2026-03")
+    leie_db.commit()
+    # rowcount reflects 4 distinct record_hashes (one per real entity)
+    assert n == 4
+
+    with leie_db.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM raw.hhs_oig_leie")
+        row = cur.fetchone()
+        assert row is not None
+        assert row[0] == 4, (
+            "Expected 4 distinct LEIE rows after dedup; "
+            f"got {row[0]}. Intra-batch DISTINCT ON regressed."
+        )
+
+        # The surviving DOE row preserves every column of the source
+        # duplicates byte-for-byte (since the dups were identical, the
+        # ctid tiebreak picks whichever physical row is first).
+        cur.execute(
+            "SELECT lastname, firstname, midname, excldate, npi "
+            "FROM raw.hhs_oig_leie WHERE lastname='DOE'",
+        )
+        rows_doe = cur.fetchall()
+        assert len(rows_doe) == 1
+        assert rows_doe[0] == ("DOE", "JANE", "A", "20180515", "1234567890")
+
+
+@pytest.mark.live_pg
 def test_profile_correction_inserts_new_row_keeps_old(
     leie_db: psycopg.Connection, tmp_path: Path,
 ) -> None:
