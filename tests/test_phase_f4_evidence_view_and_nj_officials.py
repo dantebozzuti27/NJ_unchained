@@ -52,9 +52,22 @@ from scripts.migrate import (
 pytestmark = pytest.mark.live_pg
 
 
+# EXPECTED_FORMULA_VERSION (singular): the BASE formula_version used by
+# synthetic-data setup inside the table-contract tests (insert/select
+# tests that fabricate rows for FK / CHECK / type validation, not
+# seed-completeness assertions).
 EXPECTED_FORMULA_VERSION = "2.2.0-fraud-evidence-view-v1"
 
-# All 17 fraud signals seeded across migrations 060-064. Every one of these
+# EXPECTED_FORMULA_VERSIONS (plural set): all formula_versions present
+# in seed 020 (URL templates). The original 17 signals landed under
+# 2.2.0-fraud-evidence-view-v1; the entity_on_leie_strict_address
+# signal (mig 092 / seed 021) landed under 2.3.0-fraud-strict-address-v1.
+EXPECTED_FORMULA_VERSIONS = frozenset({
+    "2.2.0-fraud-evidence-view-v1",       # original 17 URL templates
+    "2.3.0-fraud-strict-address-v1",      # entity_on_leie_strict_address
+})
+
+# All 18 fraud signals seeded across migrations 060-066, 092. Every one
 # MUST have a URL-template row -- the substrate is incomplete otherwise.
 EXPECTED_SIGNAL_IDS: frozenset[str] = frozenset({
     "candidate_no_pcc",
@@ -66,6 +79,7 @@ EXPECTED_SIGNAL_IDS: frozenset[str] = frozenset({
     "treasurer_concentration",
     "treasurer_is_candidate",
     "entity_on_leie",
+    "entity_on_leie_strict_address",  # mig 092 / seed 021
     "donor_on_leie",
     "candidate_funded_by_excluded_donors",
     "entity_excluded_via_sam_uei",
@@ -361,13 +375,22 @@ class TestSeed020Coverage:
     def test_formula_version_stamped(
         self, evidence_db: psycopg.Connection,
     ) -> None:
+        """Every formula_version present in seed 020 must be in the
+        expected set (catches accidental drift; new signals under new
+        versions must register in EXPECTED_FORMULA_VERSIONS).
+        """
         with evidence_db.cursor() as cur:
             cur.execute("""
                 SELECT DISTINCT formula_version
                 FROM ref.fraud_signal_evidence_url_template
             """)
             versions = {r[0] for r in cur.fetchall()}
-        assert versions == {EXPECTED_FORMULA_VERSION}
+        assert versions == EXPECTED_FORMULA_VERSIONS, (
+            f"unexpected versions: only-in-actual="
+            f"{versions - EXPECTED_FORMULA_VERSIONS} "
+            f"only-in-expected="
+            f"{EXPECTED_FORMULA_VERSIONS - versions}"
+        )
 
 
 # ===========================================================================
@@ -493,8 +516,13 @@ class TestEvidenceViewTokenSubstitution:
             "committee_address_clusters":  "address",
             "treasurer_concentration":     "treasurer",
             "treasurer_is_candidate":      "committee",
-            # LEIE-bearing (deferred to F8 ingest)
+            # LEIE-bearing
             "entity_on_leie":                       "candidate",
+            # mig 092 / seed 021: name + city + zip5 strict variant.
+            # Same valid entity_kinds as the loose variant (candidate,
+            # treasurer); the test picks "candidate" as the canonical
+            # exemplar for token-substitution validation.
+            "entity_on_leie_strict_address":        "candidate",
             "donor_on_leie":                        "donor",
             "candidate_funded_by_excluded_donors":  "candidate",
             # SAM-bearing (deferred to F8 ingest)

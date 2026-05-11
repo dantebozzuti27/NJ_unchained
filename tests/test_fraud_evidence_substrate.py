@@ -69,6 +69,7 @@ pytestmark = pytest.mark.live_pg
 EXPECTED_SIGNALS: dict[str, tuple[int, str]] = {
     # leie_bearing
     "entity_on_leie": (5, "oig_report"),
+    "entity_on_leie_strict_address": (5, "oig_report"),
     "entity_funded_and_excluded": (5, "far_authority"),
     "donor_on_leie": (5, "empirical_pctile"),
     "candidate_funded_by_excluded_donors": (5, "empirical_pctile"),
@@ -91,7 +92,22 @@ EXPECTED_SIGNALS: dict[str, tuple[int, str]] = {
     "treasurer_is_candidate": (1, "fec_advisory"),
 }
 
+# EXPECTED_FORMULA_VERSION: the BASE formula_version used by the original
+# 17 signals (the one tests use when they construct their own synthetic
+# seed rows for table-contract tests). Kept for backward compatibility
+# with the table-contract test suite.
 EXPECTED_FORMULA_VERSION = "2.1.0-fraud-evidence-substrate-v1"
+
+# EXPECTED_FORMULA_VERSIONS: the EXACT set of formula_version strings
+# present in the seed tables. Grows as new signals land under new
+# substrate versions; the seed-completeness tests assert
+# DISTINCT(formula_version) over the seed tables == this set, catching
+# accidental version drift (a new signal that lands under an
+# unregistered version will fail here).
+EXPECTED_FORMULA_VERSIONS = {
+    "2.1.0-fraud-evidence-substrate-v1",        # original 17 signals
+    "2.3.0-fraud-strict-address-v1",            # entity_on_leie_strict_address
+}
 
 
 @pytest.fixture
@@ -457,14 +473,22 @@ class TestSeedCompleteness:
     def test_every_explanation_row_uses_expected_formula_version(
         self, fraud_db: psycopg.Connection
     ) -> None:
+        """The set of formula_versions present in the seed must exactly
+        match EXPECTED_FORMULA_VERSIONS. Catches accidental version
+        drift -- a new signal that lands under an unregistered version
+        will fail here.
+        """
         with fraud_db.cursor() as cur:
             cur.execute(
                 "SELECT DISTINCT formula_version "
                 "FROM ref.fraud_signal_human_explanation"
             )
-            versions = [row[0] for row in cur.fetchall()]
-        assert versions == [EXPECTED_FORMULA_VERSION], (
-            f"unexpected versions: {versions}"
+            versions = {row[0] for row in cur.fetchall()}
+        assert versions == EXPECTED_FORMULA_VERSIONS, (
+            f"unexpected versions: only-in-actual="
+            f"{versions - EXPECTED_FORMULA_VERSIONS} "
+            f"only-in-expected="
+            f"{EXPECTED_FORMULA_VERSIONS - versions}"
         )
 
     def test_every_calibration_row_uses_expected_formula_version(
@@ -475,9 +499,12 @@ class TestSeedCompleteness:
                 "SELECT DISTINCT formula_version "
                 "FROM ref.fraud_signal_severity_calibration"
             )
-            versions = [row[0] for row in cur.fetchall()]
-        assert versions == [EXPECTED_FORMULA_VERSION], (
-            f"unexpected versions: {versions}"
+            versions = {row[0] for row in cur.fetchall()}
+        assert versions == EXPECTED_FORMULA_VERSIONS, (
+            f"unexpected versions: only-in-actual="
+            f"{versions - EXPECTED_FORMULA_VERSIONS} "
+            f"only-in-expected="
+            f"{EXPECTED_FORMULA_VERSIONS - versions}"
         )
 
 

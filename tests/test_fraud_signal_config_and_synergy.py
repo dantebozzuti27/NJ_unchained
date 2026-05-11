@@ -115,14 +115,22 @@ def _insert_l1(
 # ============================================================================
 
 
-def test_all_17_known_signals_seeded(fraud_db: psycopg.Connection) -> None:
-    """The 17 signal_ids known at migration time must be seeded.
+def test_all_18_known_signals_seeded(fraud_db: psycopg.Connection) -> None:
+    """The 18 signal_ids known at migration time must be seeded.
 
     14 from migration 061 + 3 from migrations 064/065/066 (sam_bearing family:
-    entity_excluded_via_sam_uei, donor_on_sam, candidate_funded_by_sam_excluded_donors).
+    entity_excluded_via_sam_uei, donor_on_sam, candidate_funded_by_sam_excluded_donors)
+    + 1 from migration 092 (entity_on_leie_strict_address: name+address strict
+    variant of entity_on_leie, leie_bearing family).
     """
     expected = {
         "entity_on_leie": ("leie_bearing", Decimal("0.00")),
+        # Migration 092 / seed 021: strict variant of entity_on_leie that
+        # requires canonical name + city + zip5 overlap. Binary indicator
+        # (raw_value=1), no dollar floor. Lives in the leie_bearing
+        # family same as the loose variant.
+        "entity_on_leie_strict_address":
+            ("leie_bearing", Decimal("0.00")),
         "entity_funded_and_excluded": ("leie_bearing", Decimal("10000.00")),
         "donor_on_leie": ("leie_bearing", Decimal("200.00")),
         "candidate_funded_by_excluded_donors":
