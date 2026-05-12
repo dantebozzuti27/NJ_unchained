@@ -3003,6 +3003,163 @@ def usaspending_active_window_non_empty(
     )
 
 
+# ============================================================================
+# MIGRATION 097: per-signal observation-distribution drift detector
+# ============================================================================
+#
+# Bi-weekly (or whenever derived.fraud_signal_observation re-materializes)
+# this asset check compares the CURRENT per-signal observation count to
+# the historical mean + sample-stddev recorded in
+# governance.v_fraud_signal_baseline_stats (mig 097).
+#
+# Pass criterion: for every (cycle, signal_id) with n_samples >= 3
+# baseline observations, the current n_obs MUST be within 2sigma of the
+# rolling mean. Signals with n_samples < 3 are vacuously passed (we
+# need >=3 samples to compute a defensible sample stddev).
+#
+# This catches:
+#   * A refresher silently dropping to zero observations (catastrophic
+#     regression that the signal_coverage check only catches when the
+#     entire signal_id is missing -- not when n_obs drops 100% but >0).
+#   * A refresher producing 10x the usual count (probably indicates the
+#     upstream raw substrate changed shape or a deduplication step was
+#     skipped).
+#   * Cross-cycle stability inside a cycle's lifetime (re-running the
+#     master refresher on the same cycle should produce ~stable counts
+#     until the cycle's underlying raw substrate evolves).
+#
+# Sourced from governance.v_fraud_signal_baseline_stats; populated by
+# the governance.capture_fraud_signal_baseline(cycle) function called
+# from the bi-weekly refresh asset (mig 097).
+# ============================================================================
+
+
+@asset_check(
+    asset=AssetKey(["derived", "fraud_signal_observation"]),
+    name="per_signal_distribution_drift_within_2sigma",
+    description=(
+        "For every (cycle, signal_id) with >= 3 baseline samples, the "
+        "current observation count must be within 2sigma of the rolling "
+        "mean recorded in governance.v_fraud_signal_baseline_stats. "
+        "Catches silent refresher regressions to zero, accidental 10x "
+        "blow-ups, and any unexpected shift in the per-signal "
+        "distribution that the schema CHECK constraints + signal_coverage "
+        "check cannot detect. Signals with n_samples < 3 vacuous-pass "
+        "(insufficient samples for a defensible 2sigma test)."
+    ),
+)
+def fraud_signal_observation_distribution_drift_within_2sigma(
+    context: AssetCheckExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> AssetCheckResult:
+    """Emit WARN if any (cycle, signal_id) deviates >2sigma from baseline."""
+    with pg.connect() as conn, conn.cursor() as cur:
+        # Pull baseline stats + current counts in one query so the
+        # comparison is consistent (both reads come from the same
+        # transaction snapshot).
+        cur.execute("""
+            WITH current_counts AS (
+                SELECT cycle, signal_id, COUNT(*)::INT AS n_obs_current
+                FROM   derived.fraud_signal_observation
+                GROUP BY cycle, signal_id
+            ),
+            -- All (cycle, signal_id) pairs that have baseline data; we
+            -- LEFT JOIN current_counts so a signal that went to zero
+            -- still appears in the join (with n_obs_current = 0).
+            joined AS (
+                SELECT
+                    s.cycle,
+                    s.signal_id,
+                    s.mean_n,
+                    s.stddev_n,
+                    s.n_samples,
+                    COALESCE(c.n_obs_current, 0)::NUMERIC AS n_obs_current
+                FROM governance.v_fraud_signal_baseline_stats s
+                LEFT JOIN current_counts c
+                  ON  c.cycle     = s.cycle
+                 AND  c.signal_id = s.signal_id
+            )
+            SELECT
+                cycle, signal_id,
+                n_obs_current::INT,
+                mean_n::NUMERIC,
+                stddev_n::NUMERIC,
+                n_samples,
+                CASE
+                    WHEN n_samples < 3 THEN NULL
+                    WHEN stddev_n IS NULL THEN NULL
+                    WHEN stddev_n = 0 AND n_obs_current = mean_n THEN 0
+                    WHEN stddev_n = 0 THEN NULL
+                    ELSE ((n_obs_current - mean_n) / stddev_n)::NUMERIC
+                END                          AS z_score
+            FROM joined
+            ORDER BY cycle, signal_id
+        """)
+        rows = cur.fetchall()
+
+    drifted: list[dict[str, Any]] = []
+    insufficient: list[dict[str, Any]] = []
+    all_rows: list[dict[str, Any]] = []
+    for cycle, sig, n_cur, mean_n, stddev_n, n_samples, z in rows:
+        # Make psycopg's Decimal types JSON-safe.
+        record: dict[str, Any] = {
+            "cycle":        cycle,
+            "signal_id":    sig,
+            "n_obs":        int(n_cur),
+            "mean_n":       float(mean_n) if mean_n is not None else None,
+            "stddev_n":     float(stddev_n) if stddev_n is not None else None,
+            "n_samples":    int(n_samples),
+            "z_score":      float(z) if z is not None else None,
+        }
+        all_rows.append(record)
+        if z is None:
+            # Either n_samples < 3 OR stddev_n = 0 with mismatch (the
+            # "stddev = 0 means historical mean = constant; if current
+            # diverges from constant, that IS drift but we can't z-
+            # score it" case). We classify the latter as drifted only
+            # if n_obs differs from mean. The CASE above already
+            # returns 0 when they match and NULL otherwise; we need
+            # to detect the "NULL because stddev=0 + mismatch" path.
+            if (
+                n_samples >= 3
+                and stddev_n is not None
+                and float(stddev_n) == 0
+                and float(n_cur) != float(mean_n)
+            ):
+                # Constant baseline + current diverged. This is drift
+                # even though we can't z-score it.
+                record["reason"] = "constant_baseline_diverged"
+                drifted.append(record)
+            else:
+                insufficient.append(record)
+        elif abs(float(z)) > 2.0:
+            drifted.append(record)
+
+    passed = len(drifted) == 0
+    details: dict[str, Any] = {
+        "n_signals_evaluated": len(rows),
+        "n_drifted":           len(drifted),
+        "n_insufficient":      len(insufficient),
+        "drifted":             drifted,
+        # Trim the all-rows + insufficient lists for log readability,
+        # operators can re-query the substrate directly if needed.
+        "insufficient_samples_signal_ids": [
+            r["signal_id"] for r in insufficient
+        ],
+    }
+    _emit(
+        governance, dataset_id="derived.fraud_signal_observation",
+        check_name="per_signal_distribution_drift_within_2sigma",
+        passed=passed, details=details,
+    )
+    return AssetCheckResult(
+        passed=passed,
+        severity=AssetCheckSeverity.WARN,
+        metadata=details,
+    )
+
+
 ALL_ASSET_CHECKS = [
     fred_row_count_positive,
     cpi_row_count_positive,
@@ -3076,4 +3233,6 @@ ALL_ASSET_CHECKS = [
     signal_candidate_funded_by_sam_excluded_donors_match_rate_plausible,
     # MIGRATION 067: regression-defense for f_leie_age_decay UTC anchor
     fraud_signal_config_decay_utc_anchored,
+    # MIGRATION 097: per-signal observation-distribution drift detector
+    fraud_signal_observation_distribution_drift_within_2sigma,
 ]

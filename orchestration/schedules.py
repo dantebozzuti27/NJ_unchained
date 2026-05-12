@@ -178,6 +178,48 @@ _PUMS_SCHEDULE = ScheduleDefinition(
 # daemon, the conditions are inert.
 
 
+# Pillar 2 fraud-signal master refresher: bi-weekly cadence.
+#
+# Cron: every other Sunday at 04:00 ET. We use "1,15" (the 1st and
+# 15th of every month) as a practical 14-day approximation -- cron
+# has no native "every 14 days" expression, and using "1,15" is the
+# canonical pattern across the team's other bi-weekly jobs. Sunday at
+# 04:00 ET is chosen because FEC's bulk-file infrastructure is
+# typically quiet then (the FEC's own publish cycle is mid-week) so a
+# raw.fec_* re-pull triggered upstream of this asset is least likely
+# to collide with the source's own ingest.
+#
+# WHY THE SCHEDULE EXISTS (vs relying on DERIVED_AUTOMATION):
+# DERIVED_AUTOMATION fires when raw.fec_* re-materializes, which
+# happens only on the (manual) FEC bulk-loader cadence -- there is no
+# upstream automation_condition that periodically re-pulls FEC bulk
+# files. Without this cron, derived.fraud_signal_observation would
+# stay frozen at the last manual FEC load. The schedule forces a
+# materialization every 14 days; the asset's compute will re-run the
+# master refresher against whatever FEC substrate is current. Doing
+# this on a regular cadence is also what lets the
+# governance.fraud_signal_baseline table accumulate samples (mig 097);
+# without the schedule, the 2sigma drift detector would never have enough
+# history to trigger.
+_FRAUD_SIGNAL_OBSERVATION_SCHEDULE = ScheduleDefinition(
+    name="fraud_signal_observation_biweekly",
+    cron_schedule="0 4 1,15 * *",
+    execution_timezone="America/New_York",
+    target=AssetSelection.assets(
+        AssetKey(["derived", "fraud_signal_observation"]),
+    ),
+    description=(
+        "Pillar 2 fraud-signal master refresher: every other Sunday "
+        "(1st and 15th of each month) at 04:00 ET. Re-runs "
+        "derived.refresh_all_fraud_signal_observations against the "
+        "current FEC + cross-source substrate; the asset compute also "
+        "calls governance.capture_fraud_signal_baseline so the bi-"
+        "weekly cadence builds up samples for the per_signal_"
+        "distribution_drift_within_2sigma asset check (mig 097)."
+    ),
+)
+
+
 ALL_SCHEDULES = [
     _FRED_SCHEDULE,
     _BLS_CPI_SCHEDULE,
@@ -187,4 +229,5 @@ ALL_SCHEDULES = [
     _LCA_SCHEDULE,
     _DCA_SCHEDULE,
     _PUMS_SCHEDULE,
+    _FRAUD_SIGNAL_OBSERVATION_SCHEDULE,
 ]

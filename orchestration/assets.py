@@ -1916,16 +1916,45 @@ def derived_fraud_signal_observation(
         )
         per_signal: dict[str, int] = {r[0]: int(r[1]) for r in cur.fetchall()}
 
+        # Capture the per-signal counts into the baseline history
+        # (mig 097). The companion asset check
+        # `per_signal_distribution_drift_within_2sigma` consumes this
+        # via governance.v_fraud_signal_baseline_stats. The capture
+        # function is idempotent within a given microsecond (PK
+        # includes captured_at) so concurrent calls are safe in
+        # practice -- the bi-weekly schedule guarantees minutes-of-
+        # spacing between runs. We tolerate failure here so a
+        # governance-schema regression cannot break the refresher.
+        try:
+            cur.execute(
+                "SELECT governance.capture_fraud_signal_baseline(%s)",
+                (cycle,),
+            )
+            row = cur.fetchone()
+            n_baseline_rows = int(row[0]) if row else 0
+        except Exception as exc:
+            context.log.warning(
+                "fraud_signal_baseline capture failed (non-fatal): %r",
+                exc,
+            )
+            n_baseline_rows = -1
+        conn.commit()
+
     _emit_materialized(
         governance, dataset_id="derived.fraud_signal_observation",
         rows_upserted=n_total,
-        extra={"cycle": cycle, "per_signal_counts": per_signal},
+        extra={
+            "cycle": cycle,
+            "per_signal_counts": per_signal,
+            "n_baseline_rows_captured": n_baseline_rows,
+        },
     )
     return MaterializeResult(metadata={
-        "rows_upserted":      MetadataValue.int(n_total),
-        "cycle":              MetadataValue.text(cycle),
-        "per_signal_counts":  MetadataValue.json(per_signal),
-        "n_signals_present":  MetadataValue.int(len(per_signal)),
+        "rows_upserted":              MetadataValue.int(n_total),
+        "cycle":                      MetadataValue.text(cycle),
+        "per_signal_counts":          MetadataValue.json(per_signal),
+        "n_signals_present":          MetadataValue.int(len(per_signal)),
+        "n_baseline_rows_captured":   MetadataValue.int(n_baseline_rows),
     })
 
 
