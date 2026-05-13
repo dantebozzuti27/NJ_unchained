@@ -32,6 +32,7 @@ const KIND_LABELS: Record<string, string> = {
   donor_cluster: "Donor cluster",
   contractor: "Contractor",
   address: "Address cluster",
+  nj_state_candidate: "NJ state candidate",
 };
 
 const PARTY_STYLE: Record<string, { fg: string; bg: string }> = {
@@ -427,5 +428,9 @@ function formatOfficeContext(info: EntityHeaderInfo): {
       party,
     };
   }
+  // Fallthrough -- includes nj_state_candidate, where getEntityHeader
+  // stores the human office_label (e.g. "Governor of New Jersey") in
+  // office_code because there is no FEC-equivalent single-letter enum
+  // for state-level offices. Rendering verbatim is the correct surface.
   return { label: info.office_code, party };
 }

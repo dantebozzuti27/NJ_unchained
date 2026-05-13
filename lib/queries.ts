@@ -42,6 +42,7 @@ const VALID_KINDS: ReadonlySet<EntityKind> = new Set([
   "donor_cluster",
   "contractor",
   "address",
+  "nj_state_candidate",
 ]);
 
 export function isValidKind(k: string): k is EntityKind {
@@ -835,6 +836,44 @@ export async function getEntityHeader(opts: {
       office_state: state ?? null,
       office_district: null,
       office_party: null,
+      office_incumbent_status: null,
+    };
+  }
+
+  if (kind === "nj_state_candidate") {
+    // Query derived.v_nj_state_candidates (NOT ref.nj_state_candidate)
+    // because the view: (a) aliases candidate_id -> entity_id to match the
+    // universal entity-key contract that v_entity_fraud_evidence + the
+    // /risk URL space depend on; (b) synthesizes office_label as a human-
+    // readable string from the office enum (governor / lt_governor / ...).
+    // The /risk URL space uses cycle = election_year::text (mig 098).
+    // is_nj is unconditionally TRUE because ref.nj_state_candidate is by
+    // construction NJ state-level; the L3 evidence view uses the same
+    // constant for the firing case.
+    const rows = (await sql`
+      SELECT
+        ${cycle}::CHAR(4)        AS cycle,
+        entity_id,
+        full_name                AS display_name,
+        party                    AS office_party,
+        office_label
+      FROM derived.v_nj_state_candidates
+      WHERE entity_id = ${id}
+        AND election_year::text = ${cycle}
+      LIMIT 1
+    `) as Record<string, unknown>[];
+    if (rows.length === 0) return null;
+    const r = rows[0];
+    return {
+      cycle: String(r.cycle),
+      entity_kind: "nj_state_candidate",
+      entity_id: String(r.entity_id),
+      display_name: r.display_name == null ? null : String(r.display_name),
+      is_nj: true,
+      office_code: r.office_label == null ? null : String(r.office_label),
+      office_state: "NJ",
+      office_district: null,
+      office_party: r.office_party == null ? null : String(r.office_party),
       office_incumbent_status: null,
     };
   }

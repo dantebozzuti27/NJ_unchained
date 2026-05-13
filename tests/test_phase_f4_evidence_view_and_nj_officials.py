@@ -60,15 +60,17 @@ EXPECTED_FORMULA_VERSION = "2.2.0-fraud-evidence-view-v1"
 
 # EXPECTED_FORMULA_VERSIONS (plural set): all formula_versions present
 # in seed 020 (URL templates). The original 17 signals landed under
-# 2.2.0-fraud-evidence-view-v1; the entity_on_leie_strict_address
-# signal (mig 092 / seed 021) landed under 2.3.0-fraud-strict-address-v1.
+# 2.2.0-fraud-evidence-view-v1; entity_on_leie_strict_address (mig 092
+# / seed 021) under 2.3.0-fraud-strict-address-v1; nj_state_candidate_on_leie
+# (mig 098 / seed 023) under 2.7.1-fraud-nj-state-candidate-on-leie-v1.
 EXPECTED_FORMULA_VERSIONS = frozenset({
-    "2.2.0-fraud-evidence-view-v1",       # original 17 URL templates
-    "2.3.0-fraud-strict-address-v1",      # entity_on_leie_strict_address
+    "2.2.0-fraud-evidence-view-v1",                # original 17 URL templates
+    "2.3.0-fraud-strict-address-v1",               # entity_on_leie_strict_address
+    "2.7.1-fraud-nj-state-candidate-on-leie-v1",   # nj_state_candidate_on_leie
 })
 
-# All 18 fraud signals seeded across migrations 060-066, 092. Every one
-# MUST have a URL-template row -- the substrate is incomplete otherwise.
+# All 19 fraud signals seeded across migrations 060-066, 092, 098. Every
+# one MUST have a URL-template row -- the substrate is incomplete otherwise.
 EXPECTED_SIGNAL_IDS: frozenset[str] = frozenset({
     "candidate_no_pcc",
     "candidate_broken_pcc",
@@ -88,6 +90,7 @@ EXPECTED_SIGNAL_IDS: frozenset[str] = frozenset({
     "entity_funded_and_excluded",
     "candidate_funded_by_nj_contractor_employees",
     "donor_employed_by_nj_contractor",
+    "nj_state_candidate_on_leie",      # mig 098 / seed 023
 })
 
 
@@ -533,6 +536,11 @@ class TestEvidenceViewTokenSubstitution:
             "entity_funded_and_excluded":                  "committee",
             "candidate_funded_by_nj_contractor_employees": "candidate",
             "donor_employed_by_nj_contractor":             "donor",
+            # NJ-state-roster x LEIE cross-source (mig 098 / seed 023). The
+            # only signal whose entity_kind is nj_state_candidate; the L3
+            # evidence view's CASE-on-entity_kind branch resolves display_name
+            # and is_nj from ref.nj_state_candidate (seeded by 022).
+            "nj_state_candidate_on_leie":                  "nj_state_candidate",
         }
 
         with evidence_db.cursor() as cur:
@@ -560,6 +568,12 @@ class TestEvidenceViewTokenSubstitution:
                 eid = "1 PARK AVE|NEWARK|NJ|07102"
             elif entity_kind == "donor":
                 eid = "SMITH, JOHN"
+            elif entity_kind == "nj_state_candidate":
+                # ref.nj_state_candidate (seed 022) has 10 candidates;
+                # picking Sherrill as the canonical exemplar. The L3
+                # evidence view's nj_state_meta CTE (mig 098) resolves
+                # full_name + is_nj=TRUE from this candidate_id.
+                eid = "NJ-STATE-SHERRILL-MIKIE-2025-GOVERNOR"
             else:
                 pytest.fail(f"unexpected entity_kind in seed: {entity_kind!r}")
 
