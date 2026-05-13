@@ -73,6 +73,7 @@ EXPECTED_SIGNALS: dict[str, tuple[int, str]] = {
     "entity_funded_and_excluded": (5, "far_authority"),
     "donor_on_leie": (5, "empirical_pctile"),
     "candidate_funded_by_excluded_donors": (5, "empirical_pctile"),
+    "nj_state_candidate_on_leie": (5, "oig_report"),
     # sam_bearing
     "entity_excluded_via_sam_uei": (5, "far_authority"),
     "donor_on_sam": (5, "empirical_pctile"),
@@ -107,6 +108,7 @@ EXPECTED_FORMULA_VERSION = "2.1.0-fraud-evidence-substrate-v1"
 EXPECTED_FORMULA_VERSIONS = {
     "2.1.0-fraud-evidence-substrate-v1",        # original 17 signals
     "2.3.0-fraud-strict-address-v1",            # entity_on_leie_strict_address
+    "2.7.1-fraud-nj-state-candidate-on-leie-v1",  # nj_state_candidate_on_leie
 }
 
 

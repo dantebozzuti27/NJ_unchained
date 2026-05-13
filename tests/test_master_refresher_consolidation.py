@@ -65,7 +65,7 @@ EXPECTED_SIGNAL_TO_REFRESHER = {
     "candidate_namesakes": "derived.refresh_candidate_namesakes_observations",
     "treasurer_is_candidate": "derived.refresh_treasurer_is_candidate_observations",
     # -------------------------------------------------------------
-    # TIER 2: LEIE-bearing (4)
+    # TIER 2: LEIE-bearing (5 -- nj_state_candidate_on_leie added in mig 098)
     # -------------------------------------------------------------
     "entity_on_leie": "derived.refresh_signal_entity_on_leie",
     "entity_on_leie_strict_address":
@@ -73,6 +73,8 @@ EXPECTED_SIGNAL_TO_REFRESHER = {
     "donor_on_leie": "derived.refresh_signal_donor_on_leie",
     "candidate_funded_by_excluded_donors":
         "derived.refresh_signal_candidate_funded_by_excluded_donors",
+    "nj_state_candidate_on_leie":
+        "derived.refresh_signal_nj_state_candidate_on_leie",
     # -------------------------------------------------------------
     # TIER 3: SAM-bearing (3)
     # -------------------------------------------------------------
@@ -197,18 +199,19 @@ def test_master_invokes_at_least_18_refreshers(
     )
 
 
-def test_fraud_signal_config_has_exactly_18_signals(
+def test_fraud_signal_config_has_exactly_19_signals(
     master_db: psycopg.Connection,
 ):
     """
-    Pin the current 18-signal taxonomy. If the count changes, the
-    EXPECTED_SIGNAL_TO_REFRESHER map MUST be updated alongside.
+    Pin the current 19-signal taxonomy (was 18 pre-mig 098;
+    nj_state_candidate_on_leie added 2026-05-12). If the count changes
+    again, EXPECTED_SIGNAL_TO_REFRESHER MUST be updated alongside.
     """
     with master_db.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM derived.fraud_signal_config")
         (n,) = cur.fetchone()
-    assert n == 18, (
-        f"fraud_signal_config has {n} rows; expected 18. If you added a "
+    assert n == 19, (
+        f"fraud_signal_config has {n} rows; expected 19. If you added a "
         f"new signal, update EXPECTED_SIGNAL_TO_REFRESHER and re-run."
     )
 
@@ -307,7 +310,10 @@ def test_formula_version_registered(master_db: psycopg.Connection):
     )
     eff_date, desc = row
     assert eff_date.isoformat() == "2026-05-11"
-    assert "master refresher" in desc.lower() or "consolidation" in desc.lower()
+    desc_lower = desc.lower()
+    assert "rewritten" in desc_lower and "fraud signal" in desc_lower, (
+        f"description does not document the consolidation rewrite: {desc!r}"
+    )
 
 
 def test_master_function_comment_documents_consolidation(
