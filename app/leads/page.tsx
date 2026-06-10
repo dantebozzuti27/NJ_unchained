@@ -8,9 +8,10 @@ import type { HighValueLead, HighValueLeadsSummary } from "@/lib/types";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-// Formula head for the lead-ranking substrate (migration 112). Surfaced so the
-// page carries its own provenance, per the verifiable-data invariant.
-const PROGRAM_VERSION = "3.0.0-fraud-high-value-leads-v1";
+// Formula head for the lead-ranking substrate (migration 113, undetected-first
+// reframe). Surfaced so the page carries its own provenance, per the
+// verifiable-data invariant.
+const PROGRAM_VERSION = "3.1.0-fraud-leads-undetected-first-v1";
 
 /* Reward-tier presentation. tier 1 = highest reportability reward potential. */
 const TIER_META: Record<
@@ -65,19 +66,25 @@ export default async function LeadsPage() {
   const reachable = await isDbReachable();
 
   let summary: HighValueLeadsSummary | null = null;
-  let leads: HighValueLead[] = [];
+  let undetected: HighValueLead[] = [];
+  let alreadyCaught: HighValueLead[] = [];
   let dbError: string | null = null;
 
   if (reachable.reachable) {
     try {
       summary = await getHighValueLeadsSummary();
       if (summary.n_total > 0) {
-        leads = await listHighValueLeads({ limit: 50 });
+        [undetected, alreadyCaught] = await Promise.all([
+          listHighValueLeads({ limit: 40, priorEnforcement: false }),
+          listHighValueLeads({ limit: 12, priorEnforcement: true }),
+        ]);
       }
     } catch (e) {
       dbError = e instanceof Error ? e.message : String(e);
     }
   }
+
+  const hasLeads = undetected.length > 0 || alreadyCaught.length > 0;
 
   return (
     <div className="space-y-8">
@@ -94,8 +101,13 @@ export default async function LeadsPage() {
       ) : (
         <>
           {summary && <SummaryBar summary={summary} />}
-          {leads.length > 0 ? (
-            <LeadQueue leads={leads} />
+          {hasLeads ? (
+            <>
+              <UndetectedQueue leads={undetected} />
+              {alreadyCaught.length > 0 && (
+                <AlreadyCaughtLane leads={alreadyCaught} summary={summary} />
+              )}
+            </>
           ) : (
             <DormantNotice />
           )}
@@ -112,45 +124,47 @@ export default async function LeadsPage() {
 /* ---------------------------------------------------------------- */
 
 function Hero({ summary }: { summary: HighValueLeadsSummary | null }) {
-  const maxExp = summary?.max_exposure_usd ?? 0;
-  const nReward = summary?.n_reward_eligible ?? 0;
+  const maxScale = summary?.max_undetected_scale_usd ?? 0;
+  const nUndetected = summary?.n_undetected ?? 0;
 
   return (
     <section className="relative overflow-hidden rounded-2xl border border-rose-200 dark:border-rose-900 bg-gradient-to-br from-rose-50 via-white to-amber-50 dark:from-rose-950/40 dark:via-zinc-900 dark:to-amber-950/30 p-8 sm:p-12">
       <div className="max-w-3xl space-y-6">
         <span className="inline-flex items-center gap-2 rounded-full border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-rose-800 dark:text-rose-200">
           <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
-          Highest-value fraud · FRAUD-F8
+          Undetected fraud · FRAUD-F8
         </span>
 
         <h1 className="text-4xl sm:text-5xl font-bold tracking-tight leading-tight">
-          {maxExp > 0 ? (
+          {maxScale > 0 ? (
             <>
-              The biggest single lead carries{" "}
+              The biggest <span className="text-rose-600 dark:text-rose-400">not-yet-flagged</span>{" "}
+              provider bills{" "}
               <span className="text-rose-600 dark:text-rose-400">
-                {fmtUsd(maxExp)}
+                {fmtUsd(maxScale)}
               </span>{" "}
-              in measured exposure.
+              of Medicare a year.
             </>
           ) : (
-            <>Every flagged entity, ranked by what it&rsquo;s worth to pursue.</>
+            <>Find the fraud no one has caught yet.</>
           )}
         </h1>
 
         <p className="max-w-2xl text-lg text-zinc-600 dark:text-zinc-400">
-          One queue across every detector, ranked by{" "}
-          <strong>financial scale</strong> and{" "}
-          <strong>reportability reward potential</strong> &mdash; the statutory
-          whistleblower channel that can actually act on each lead. Reward-bearing
-          False&nbsp;Claims&nbsp;Act candidates (excluded providers still billing
-          Medicare) rise to the top, biased toward <em>repeat violators</em>{" "}
-          whose prior sanction failed to deter and <em>multi-source</em> hits
-          corroborated across independent datasets.
-          {nReward > 0 && (
+          This queue deliberately demotes anyone already on an exclusion or
+          debarment list &mdash; those cases are <em>already caught</em>, and
+          under the False&nbsp;Claims&nbsp;Act public-disclosure bar
+          (31&nbsp;U.S.C.&nbsp;§&nbsp;3730(e)(4)) a provider derivable from public
+          lists is weak whistleblower material. Instead it leads with{" "}
+          <strong>undetected providers</strong>: those with no enforcement action
+          but a <strong>behavioral billing pattern</strong> that fired a detector,
+          ranked by their real <strong>Medicare dollar scale</strong> and how many
+          independent patterns corroborate it.
+          {nUndetected > 0 && (
             <>
               {" "}
               <span className="font-semibold text-rose-700 dark:text-rose-300">
-                {nReward} reward-eligible
+                {nUndetected.toLocaleString()} undetected leads
               </span>{" "}
               right now.
             </>
@@ -158,9 +172,9 @@ function Hero({ summary }: { summary: HighValueLeadsSummary | null }) {
         </p>
 
         <p className="pt-1 text-xs text-zinc-500 dark:text-zinc-500">
-          The ranking is lexicographic over <em>measured dollars</em> and a{" "}
-          <em>cited statute&rarr;reward mapping</em> &mdash; never a fabricated
-          composite score · formula head{" "}
+          Ranking is lexicographic over <em>measured dollars and counts</em>{" "}
+          (enforcement status &rarr; Medicare scale &rarr; corroboration) &mdash;
+          never a fabricated composite score · formula head{" "}
           <code className="font-mono">{PROGRAM_VERSION}</code>
         </p>
       </div>
@@ -175,23 +189,24 @@ function Hero({ summary }: { summary: HighValueLeadsSummary | null }) {
 function SummaryBar({ summary }: { summary: HighValueLeadsSummary }) {
   const cells: { label: string; value: string; tone?: string }[] = [
     {
-      label: "Reward-eligible exposure",
-      value:
-        summary.total_reward_eligible_exposure_usd != null
-          ? fmtUsd(summary.total_reward_eligible_exposure_usd)
-          : "—",
+      label: "Undetected leads",
+      value: summary.n_undetected.toLocaleString(),
       tone: "text-rose-700 dark:text-rose-300",
     },
     {
-      label: "Largest single lead",
+      label: "Largest undetected scale",
       value:
-        summary.max_exposure_usd != null
-          ? fmtUsd(summary.max_exposure_usd)
+        summary.max_undetected_scale_usd != null
+          ? fmtUsd(summary.max_undetected_scale_usd)
           : "—",
     },
-    { label: "Reward-eligible leads", value: summary.n_reward_eligible.toLocaleString() },
-    { label: "Repeat violators", value: summary.n_repeat_violators.toLocaleString() },
     { label: "Multi-source hits", value: summary.n_multi_source.toLocaleString() },
+    {
+      label: "Already on enforcement radar",
+      value: summary.n_already_caught.toLocaleString(),
+      tone: "text-zinc-500 dark:text-zinc-400",
+    },
+    { label: "Repeat violators (caught)", value: summary.n_repeat_violators.toLocaleString() },
     { label: "Total flagged entities", value: summary.n_total.toLocaleString() },
   ];
   return (
@@ -241,20 +256,26 @@ function SummaryBar({ summary }: { summary: HighValueLeadsSummary }) {
 /*  Lead queue                                                      */
 /* ---------------------------------------------------------------- */
 
-function LeadQueue({ leads }: { leads: HighValueLead[] }) {
+function UndetectedQueue({ leads }: { leads: HighValueLead[] }) {
   return (
     <section>
-      <div className="mb-3 flex items-baseline justify-between gap-3">
+      <div className="mb-1 flex items-baseline justify-between gap-3">
         <h2 className="text-lg font-semibold tracking-tight">
-          Priority queue
+          Undetected leads
           <span className="ml-2 text-sm font-normal text-zinc-500">
             (top {leads.length})
           </span>
         </h2>
         <span className="text-xs text-zinc-500">
-          Ranked by reward tier → exposure → repeat → multi-source
+          Ranked by Medicare scale → corroboration → severity
         </span>
       </div>
+      <p className="mb-3 max-w-3xl text-xs text-zinc-500">
+        Providers with a behavioral billing pattern but{" "}
+        <strong>no exclusion, debarment, or sanction on record</strong> &mdash;
+        the cases that haven&rsquo;t happened yet. A statistical outlier is a lead
+        for review, not a finding of fraud.
+      </p>
       <div className="space-y-2">
         {leads.map((l) => (
           <LeadCard key={`${l.entity_kind}|${l.entity_id}`} lead={l} />
@@ -264,9 +285,50 @@ function LeadQueue({ leads }: { leads: HighValueLead[] }) {
   );
 }
 
-function LeadCard({ lead: l }: { lead: HighValueLead }) {
+function AlreadyCaughtLane({
+  leads,
+  summary,
+}: {
+  leads: HighValueLead[];
+  summary: HighValueLeadsSummary | null;
+}) {
+  const total = summary?.n_already_caught ?? leads.length;
+  return (
+    <section className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40 p-4">
+      <div className="mb-1 flex items-baseline justify-between gap-3">
+        <h2 className="text-base font-semibold tracking-tight text-zinc-600 dark:text-zinc-400">
+          Already on the enforcement radar
+          <span className="ml-2 text-sm font-normal text-zinc-500">
+            ({total.toLocaleString()} total · showing {leads.length})
+          </span>
+        </h2>
+      </div>
+      <p className="mb-3 max-w-3xl text-xs text-zinc-500">
+        These entities are already on an exclusion or debarment list (HHS-OIG
+        LEIE / NJ-Medicaid / SAM). The enforcement system has acted &mdash; and
+        the FCA public-disclosure bar weakens any whistleblower claim built on
+        public lists. Kept for completeness, demoted on purpose.
+      </p>
+      <div className="space-y-2 opacity-80">
+        {leads.map((l) => (
+          <LeadCard key={`${l.entity_kind}|${l.entity_id}`} lead={l} dimmed />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function LeadCard({ lead: l, dimmed }: { lead: HighValueLead; dimmed?: boolean }) {
   const meta = TIER_META[l.best_reward_tier] ?? TIER_META[5];
   const kindLabel = KIND_LABELS[l.entity_kind] ?? l.entity_kind;
+  // Financial-scale figure: measured exposure if the signal is dollar-denominated,
+  // else the provider's real Medicare volume (the undetected-lead yardstick).
+  const scale =
+    l.peak_exposure_usd != null && l.peak_exposure_usd > 0
+      ? { usd: l.peak_exposure_usd, label: "peak exposure" }
+      : l.provider_scale_usd != null && l.provider_scale_usd > 0
+        ? { usd: l.provider_scale_usd, label: "Medicare billed / yr" }
+        : null;
   return (
     <div
       className={`block rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 ring-1 ring-transparent hover:${meta.ring}/30 transition-colors`}
@@ -290,11 +352,21 @@ function LeadCard({ lead: l }: { lead: HighValueLead }) {
                 NJ
               </span>
             )}
-            <span
-              className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${meta.bg} ${meta.fg}`}
-            >
-              T{l.best_reward_tier} · {meta.label}
-            </span>
+            {dimmed ? (
+              <span
+                className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+                title="Already on an exclusion/debarment list — enforcement has acted."
+              >
+                ALREADY CAUGHT
+              </span>
+            ) : (
+              <span
+                className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold bg-rose-100 text-rose-900 dark:bg-rose-950 dark:text-rose-200"
+                title="No exclusion, debarment, or sanction on record — a prospective lead."
+              >
+                UNDETECTED
+              </span>
+            )}
             {l.repeat_violator && (
               <span
                 className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold bg-red-100 text-red-900 dark:bg-red-950 dark:text-red-200"
@@ -333,22 +405,26 @@ function LeadCard({ lead: l }: { lead: HighValueLead }) {
           </div>
         </div>
 
-        {/* Exposure + reward */}
+        {/* Financial scale + reward */}
         <div className="flex flex-col items-end text-right">
-          {l.peak_exposure_usd != null && l.peak_exposure_usd > 0 ? (
+          {scale ? (
             <>
               <div
                 className="font-mono text-2xl font-bold leading-none"
-                title="Peak single-cycle measured dollar exposure"
+                title={
+                  scale.label === "peak exposure"
+                    ? "Peak single-cycle measured dollar exposure"
+                    : "Provider's peak single-year Medicare volume (Part B payment + Part D drug cost)"
+                }
               >
-                {fmtUsd(l.peak_exposure_usd)}
+                {fmtUsd(scale.usd)}
               </div>
               <div className="mt-0.5 text-[10px] uppercase tracking-wider text-zinc-500">
-                peak exposure
+                {scale.label}
               </div>
             </>
           ) : (
-            <div className="text-[11px] text-zinc-400">no $ exposure</div>
+            <div className="text-[11px] text-zinc-400">no $ scale</div>
           )}
           {l.reward_eligible &&
             l.reward_low_usd != null &&
@@ -519,28 +595,33 @@ function Methodology() {
       </summary>
       <div className="mt-3 space-y-2 leading-relaxed">
         <p>
-          Each entity is ranked <em>lexicographically</em>, not by a weighted
-          blend: first by <strong>reportability reward tier</strong> (does a
-          statutory whistleblower bounty attach — False Claims Act qui tam ranks
-          highest), then by <strong>peak measured USD exposure</strong>, then by
-          whether a prior-sanction signal <strong>recurred across cycles</strong>{" "}
-          (the penalty-failed-to-deter case), then by{" "}
-          <strong>multi-source breadth</strong>. Every ordering key is either a
-          dollar figure measured on the observation or a value from the
-          versioned, cited{" "}
-          <code className="font-mono">ref.fraud_reportability_channel</code>{" "}
-          mapping. No magic composite score exists.
+          <strong>Enforcement status comes first.</strong> An entity already on
+          an exclusion or debarment list (HHS-OIG&nbsp;LEIE, NJ-Medicaid, SAM)
+          has, by definition, already been caught &mdash; the listing <em>is</em>{" "}
+          the enforcement action. Worse for a whistleblower, the False Claims Act
+          public-disclosure bar (31&nbsp;U.S.C.&nbsp;§&nbsp;3730(e)(4)) makes a
+          provider derivable from public lists weak relator material. So those
+          entities are demoted to a separate lane, and the queue leads with{" "}
+          <strong>undetected</strong> providers: a behavioral billing pattern
+          fired, but no enforcement action exists yet.
         </p>
         <p>
-          The <strong>estimated reward</strong> applies the statutory relator
-          share (15–30%, 31&nbsp;U.S.C.&nbsp;§&nbsp;3730(d)) to the peak
-          single-cycle exposure as a conservative single-damages proxy. Actual
-          FCA damages can be trebled, so this band is a floor, not a prediction.
+          Within the undetected lane the ranking is{" "}
+          <em>lexicographic</em>, not a weighted blend:{" "}
+          <strong>financial scale</strong> &mdash; the provider&rsquo;s real peak
+          single-year Medicare volume (Part&nbsp;B payment + Part&nbsp;D drug
+          cost), since a behavioral outlier&rsquo;s raw value is a rate, not a
+          dollar &mdash; then <strong>multi-source corroboration</strong> (how
+          many independent detector families fired), then{" "}
+          <strong>severity</strong>. Every ordering key is a measured dollar or a
+          count; there is no composite score.
         </p>
         <p>
-          A lead is a <em>structural anomaly routed for review</em>, not a
-          finding of fraud. Each card links to the enforcement channel and the
-          governing statute so an analyst can verify before acting.
+          A lead is a <em>statistical anomaly routed for review</em>, not a
+          finding of fraud &mdash; a high-volume practice can be perfectly
+          legitimate. Each card links to the entity&rsquo;s evidence, the
+          enforcement channel, and the governing statute so an analyst can verify
+          before acting.
         </p>
       </div>
     </details>

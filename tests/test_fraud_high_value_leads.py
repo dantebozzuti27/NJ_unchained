@@ -1,6 +1,7 @@
-"""Live-PG regression tests for migration 112 + seed 050.
+"""Live-PG regression tests for migrations 112 + 113 and seed 050.
 
-VISION_2026 Pillar 2 (civic integrity) FRAUD-F8: highest-value lead ranking.
+VISION_2026 Pillar 2 (civic integrity) FRAUD-F8: highest-value lead ranking,
+reframed (mig 113) to surface UNDETECTED fraud first.
 
 What this module pins:
     * ref.fraud_reportability_channel:
@@ -10,9 +11,15 @@ What this module pins:
         - the five dollar-denominated exclusion-billing signals are the
           reward-eligible, raw_value_is_usd tier 1/2 lane; FEC structural
           signals are tier 5 / no bounty.
-    * derived.v_high_value_leads:
-        - lexicographic ranking: reward tier, then peak USD exposure, then
-          cross-cycle prior-sanction recurrence, then multi-source breadth.
+    * derived.v_high_value_leads (undetected-first, mig 113):
+        - enforcement status is the PRIMARY ordering axis: entities with a
+          prior-sanction signal (already on an exclusion list = "already
+          caught") are demoted BELOW all undetected entities.
+        - within the undetected lane, ranking is lexicographic on financial
+          scale (COALESCE(peak exposure, provider Medicare volume)) → multi-
+          source breadth → severity.
+        - provider_scale_usd = peak single-year Medicare volume (Part B
+          payment + Part D drug cost) and breaks ties among undetected leads.
         - repeat_violator = a prior-sanction signal recurred across >=2 cycles.
         - multi_source = >=2 distinct signal families.
         - reward band = statutory relator share (15-30%) on PEAK exposure.
@@ -38,6 +45,16 @@ from scripts.migrate import (
 pytestmark = pytest.mark.live_pg
 
 EXPECTED_FORMULA_VERSION = "3.0.0-fraud-high-value-leads-v1"
+EXPECTED_FORMULA_VERSION_113 = "3.1.0-fraud-leads-undetected-first-v1"
+
+# Minimal Part B row insert (only NOT NULL columns + the payment we rank on).
+_PARTB_INSERT = (
+    "INSERT INTO raw.cms_physician_provider "
+    "(data_year, npi, prvdr_state_abrvtn, tot_mdcr_pymt_amt, "
+    " source_url, source_sha256, source_vintage) "
+    "VALUES (%s, %s, %s, %s, %s, %s, %s)"
+)
+_SHA = "0" * 64
 
 # The five dollar-denominated, reward-eligible exclusion-billing signals.
 _USD_REWARD_SIGNALS = {
@@ -84,11 +101,12 @@ def hv_db(live_pg: psycopg.Connection) -> psycopg.Connection:
 
 def test_formula_version_registered(hv_db: psycopg.Connection) -> None:
     with hv_db.cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM ref.formula_version WHERE formula_version = %s",
-            (EXPECTED_FORMULA_VERSION,),
-        )
-        assert cur.fetchone() is not None
+        for fv in (EXPECTED_FORMULA_VERSION, EXPECTED_FORMULA_VERSION_113):
+            cur.execute(
+                "SELECT 1 FROM ref.formula_version WHERE formula_version = %s",
+                (fv,),
+            )
+            assert cur.fetchone() is not None, fv
 
 
 def test_every_configured_signal_has_a_channel(hv_db: psycopg.Connection) -> None:
@@ -154,13 +172,17 @@ def test_fec_structural_signals_have_no_bounty(hv_db: psycopg.Connection) -> Non
 
 
 def _seed_ranking_fixture(conn: psycopg.Connection) -> None:
-    """Three entities spanning the tier ladder.
+    """Three entities spanning enforcement status and the tier ladder.
 
     A (provider AAA): state_excluded_provider_billing in 2022 ($1M) AND 2023
-       ($2M) -> tier 1, repeat (sanction in 2 cycles); plus an opioid outlier
-       in 2023 -> a 2nd family -> multi-source.
-    B (provider BBB): opioid outlier only -> tier 3, no bounty, no USD.
-    C (committee CCC): treasurer_concentration -> tier 5.
+       ($2M) -> ALREADY CAUGHT (prior sanction), repeat (sanction in 2 cycles);
+       plus an opioid outlier in 2023 -> a 2nd family -> multi-source.
+    B (provider BBB): opioid outlier only -> UNDETECTED, severity 4.
+    C (committee CCC): treasurer_concentration -> UNDETECTED, severity 3.
+
+    Undetected-first ranking (mig 113): BBB and CCC (no prior sanction) rank
+    above AAA (caught). Between the two undetected entities, scale ties at 0
+    (no raw CMS rows), so severity breaks it: BBB (4) before CCC (3).
     """
     rows = [
         ("2022", "provider", "AAA", "state_excluded_provider_billing",
@@ -186,7 +208,7 @@ def test_ranking_order_and_flags(hv_db: psycopg.Connection) -> None:
         cur.execute(
             "SELECT entity_id, best_reward_tier, peak_exposure_usd, "
             "reward_low_usd, reward_high_usd, repeat_violator, multi_source, "
-            "lead_rank "
+            "has_prior_sanction, lead_rank "
             "FROM derived.v_high_value_leads ORDER BY lead_rank"
         )
         rows = cur.fetchall()
@@ -194,16 +216,18 @@ def test_ranking_order_and_flags(hv_db: psycopg.Connection) -> None:
     by_id = {r[0]: r for r in rows}
     assert set(by_id) == {"AAA", "BBB", "CCC"}
 
-    # Lexicographic order: tier 1 (AAA) < tier 3 (BBB) < tier 5 (CCC).
-    assert [r[0] for r in rows] == ["AAA", "BBB", "CCC"]
+    # Undetected-first: the two never-sanctioned entities rank above the caught
+    # one; severity breaks the undetected tie (BBB sev 4 > CCC sev 3).
+    assert [r[0] for r in rows] == ["BBB", "CCC", "AAA"]
 
     a = by_id["AAA"]
-    assert a[1] == 1                       # best_reward_tier
+    assert a[1] == 1                       # best_reward_tier (channel still tier 1)
     assert float(a[2]) == 2_000_000.0      # peak = max single-cycle exposure
     assert float(a[3]) == 2_000_000.0 * 0.15  # reward floor low
     assert float(a[4]) == 2_000_000.0 * 0.30  # reward floor high
     assert a[5] is True                    # repeat_violator (sanction in 2 cycles)
     assert a[6] is True                    # multi_source (2 families)
+    assert a[7] is True                    # has_prior_sanction -> demoted
 
     b = by_id["BBB"]
     assert b[1] == 3                       # OIG-referral tier
@@ -211,9 +235,42 @@ def test_ranking_order_and_flags(hv_db: psycopg.Connection) -> None:
     assert b[3] is None and b[4] is None   # no bounty
     assert b[5] is False
     assert b[6] is False
+    assert b[7] is False                   # undetected
 
     c = by_id["CCC"]
     assert c[1] == 5                       # FEC structural
+    assert c[7] is False                   # undetected
+
+
+def test_provider_scale_breaks_undetected_ties(hv_db: psycopg.Connection) -> None:
+    """Among undetected providers, real Medicare volume ranks first.
+
+    Two never-sanctioned providers each fire one opioid outlier (same family,
+    same severity). The one billing more Medicare (Part B payment) must outrank
+    the other purely on provider_scale_usd.
+    """
+    with hv_db.cursor() as cur:
+        for npi, sev in (("HISCALE001", 4), ("LOSCALE002", 4)):
+            cur.execute(
+                _OBS_INSERT,
+                ("2023", "provider", npi, "opioid_prescribing_outlier",
+                 50, sev, "specialty=X", 0.95, "/t"),
+            )
+        cur.execute(_PARTB_INSERT,
+                    (2023, "HISCALE001", "NJ", 5_000_000, "/u", _SHA, "v"))
+        cur.execute(_PARTB_INSERT,
+                    (2023, "LOSCALE002", "NJ", 1_000_000, "/u", _SHA, "v"))
+        hv_db.commit()
+        cur.execute(
+            "SELECT entity_id, provider_scale_usd, has_prior_sanction, lead_rank "
+            "FROM derived.v_high_value_leads ORDER BY lead_rank"
+        )
+        rows = cur.fetchall()
+
+    assert [r[0] for r in rows] == ["HISCALE001", "LOSCALE002"]
+    assert float(rows[0][1]) == 5_000_000.0
+    assert float(rows[1][1]) == 1_000_000.0
+    assert all(r[2] is False for r in rows)   # both undetected
 
 
 def test_single_cycle_sanction_is_not_repeat(hv_db: psycopg.Connection) -> None:

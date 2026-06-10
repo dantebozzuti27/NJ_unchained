@@ -1244,12 +1244,21 @@ export async function getHealthcareSubstrateStatus(): Promise<HealthcareSubstrat
  */
 export async function listHighValueLeads(opts: {
   limit?: number;
+  /**
+   * Enforcement-status lane:
+   *   false ⇒ UNDETECTED (no prior exclusion/debarment) — the prospective queue.
+   *   true  ⇒ ALREADY-CAUGHT (on an exclusion/debarment list) — demoted lane.
+   *   undefined ⇒ both, in rank order (undetected first).
+   */
+  priorEnforcement?: boolean;
 }): Promise<HighValueLead[]> {
   const sql = getSql();
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+  const priorFilter = opts.priorEnforcement;
   const rows = (await sql`
     WITH lead AS (
       SELECT * FROM derived.v_high_value_leads
+      WHERE ${priorFilter == null ? sql`TRUE` : sql`has_prior_sanction = ${priorFilter}`}
       ORDER BY lead_rank
       LIMIT ${limit}
     )
@@ -1273,8 +1282,10 @@ export async function listHighValueLeads(opts: {
       l.max_severity::INT                            AS max_severity,
       l.best_reward_tier::INT                        AS best_reward_tier,
       l.reward_eligible,
+      l.has_prior_sanction                           AS prior_enforcement,
       l.repeat_violator,
       l.multi_source,
+      l.provider_scale_usd::FLOAT8                   AS provider_scale_usd,
       l.peak_exposure_usd::FLOAT8                    AS peak_exposure_usd,
       l.total_exposure_usd::FLOAT8                   AS total_exposure_usd,
       l.reward_low_usd::FLOAT8                       AS reward_low_usd,
@@ -1337,8 +1348,11 @@ export async function listHighValueLeads(opts: {
     max_severity: Number(r.max_severity),
     best_reward_tier: Number(r.best_reward_tier),
     reward_eligible: Boolean(r.reward_eligible),
+    prior_enforcement: Boolean(r.prior_enforcement),
     repeat_violator: Boolean(r.repeat_violator),
     multi_source: Boolean(r.multi_source),
+    provider_scale_usd:
+      r.provider_scale_usd == null ? null : Number(r.provider_scale_usd),
     peak_exposure_usd:
       r.peak_exposure_usd == null ? null : Number(r.peak_exposure_usd),
     total_exposure_usd:
@@ -1377,6 +1391,17 @@ export async function getHighValueLeadsSummary(): Promise<HighValueLeadsSummary>
     GROUP BY ROLLUP (best_reward_tier)
   `) as Record<string, unknown>[];
 
+  // Enforcement-status split: the headline reframe. Undetected = no prior
+  // exclusion/debarment (the prospective queue); already-caught = on a list.
+  const statusRows = (await sql`
+    SELECT
+      COUNT(*) FILTER (WHERE NOT has_prior_sanction)::INT         AS n_undetected,
+      COUNT(*) FILTER (WHERE has_prior_sanction)::INT             AS n_caught,
+      MAX(COALESCE(peak_exposure_usd, provider_scale_usd))
+        FILTER (WHERE NOT has_prior_sanction)::FLOAT8             AS max_undetected_scale
+    FROM derived.v_high_value_leads
+  `) as Record<string, unknown>[];
+
   // FEC itemized-contribution substrate (the political-flow lane); a guarded
   // count so a missing table degrades to 0 rather than throwing.
   const fecRows = (await sql`
@@ -1408,6 +1433,8 @@ export async function getHighValueLeadsSummary(): Promise<HighValueLeadsSummary>
     }
   }
 
+  const sr = statusRows[0] ?? {};
+
   return {
     count_by_tier,
     n_total,
@@ -1417,5 +1444,9 @@ export async function getHighValueLeadsSummary(): Promise<HighValueLeadsSummary>
     max_exposure_usd,
     total_reward_eligible_exposure_usd,
     n_fec_contribution: Number(fecRows[0]?.n_fec ?? 0),
+    n_undetected: Number(sr.n_undetected ?? 0),
+    n_already_caught: Number(sr.n_caught ?? 0),
+    max_undetected_scale_usd:
+      sr.max_undetected_scale == null ? null : Number(sr.max_undetected_scale),
   };
 }

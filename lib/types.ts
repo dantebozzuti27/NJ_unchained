@@ -355,9 +355,21 @@ export interface HighValueLead {
   /** 1 = highest reportability reward potential … 5 = lowest (no bounty). */
   best_reward_tier: number;
   reward_eligible: boolean;
+  /**
+   * TRUE ⇒ already on an exclusion/debarment list (LEIE/NJ-Medicaid/SAM) —
+   * "already caught." FALSE ⇒ undetected: a behavioral pattern fired but no
+   * enforcement action exists yet (the prospective, original-source lane).
+   */
+  prior_enforcement: boolean;
   /** A prior-sanction signal recurred across ≥2 cycles (penalty failed to deter). */
   repeat_violator: boolean;
   multi_source: boolean;
+  /**
+   * Provider's real Medicare dollar volume (peak single year: Part B payment +
+   * Part D drug cost). The financial-scale yardstick for undetected leads whose
+   * firing signal is a non-dollar behavioral outlier. Null for non-providers.
+   */
+  provider_scale_usd: number | null;
   /** Peak single-cycle USD exposure (null where the driving signal isn't dollar-denominated). */
   peak_exposure_usd: number | null;
   /** USD exposure summed across cycles. */
@@ -397,6 +409,12 @@ export interface HighValueLeadsSummary {
   total_reward_eligible_exposure_usd: number | null;
   /** Itemized FEC contribution rows loaded (0 ⇒ political-flow lane dormant). */
   n_fec_contribution: number;
+  /** Leads with NO prior enforcement action — the prospective/undetected queue. */
+  n_undetected: number;
+  /** Leads already on an exclusion/debarment list — the demoted "already caught" lane. */
+  n_already_caught: number;
+  /** Largest Medicare-dollar scale among undetected leads (peak exposure or provider volume). */
+  max_undetected_scale_usd: number | null;
 }
 
 export interface PlatformStatus {

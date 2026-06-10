@@ -1,4 +1,58 @@
 ================================================================================
+SESSION 2026-06-09d (FRAUD-F8 reframe) -- rank UNDETECTED fraud, not the caught
+================================================================================
+
+OWNER STEER: "look for cases that haven't already happened, no need to find
+someone who's already in jail" + "we need more healthcare data."
+
+THE FLAW THIS FIXES: mig 112 ranked exclusion x billing leads at the top. But an
+entity on LEIE / NJ-Medicaid / SAM is BY DEFINITION already caught -- the listing
+IS the enforcement action (Centers Lab, Kalra, Sahni were already prosecuted in
+real life). The FCA public-disclosure / first-to-file bar (31 USC 3730(e)(4))
+makes a provider derivable from PUBLIC lists weak relator material. We were
+ranking solved cases.
+
+INCREMENT 1 SHIPPED (mig 113 + query/page rework + tests; applied to PROD):
+* db/migrations/113_fraud_leads_undetected_first.sql -- CREATE OR REPLACE VIEW
+  derived.v_high_value_leads (append-only: adds provider_scale_usd). Enforcement
+  status is now the PRIMARY ordering axis: has_prior_sanction ASC (UNDETECTED
+  first) -> COALESCE(peak_exposure_usd, provider_scale_usd) DESC (financial
+  scale) -> n_families DESC -> max_severity DESC. provider_scale_usd = peak
+  single-year Medicare volume per NPI (Part B Tot_Mdcr_Pymt_Amt + Part D
+  Tot_Drug_Cst), the dollar yardstick for behavioral outliers whose raw_value is
+  a rate, not USD. Still lexicographic over measured dollars/counts; no score.
+  formula head 3.1.0-fraud-leads-undetected-first-v1.
+* lib/queries.ts: listHighValueLeads gains a priorEnforcement lane filter +
+  exposes prior_enforcement & provider_scale_usd; getHighValueLeadsSummary gains
+  n_undetected / n_already_caught / max_undetected_scale_usd.
+* app/leads/page.tsx: TWO lanes -- primary "Undetected leads" (no exclusion on
+  record, ranked by Medicare scale) + demoted "Already on the enforcement radar"
+  (visible, not hidden, with the FCA-bar rationale). UNDETECTED/ALREADY-CAUGHT
+  badges; cards show "Medicare billed / yr" when no $ exposure. Methodology +
+  hero rewritten.
+* tests/test_fraud_high_value_leads.py: ranking test now asserts undetected-first
+  order; +test_provider_scale_breaks_undetected_ties; +113 formula-version check.
+  9/9 green on local PG.
+* PROD verified: 9,238 undetected vs 1,677 already-caught. Top undetected lead =
+  Nirman Tulsyan (NPI 1447323118) $25.9M Medicare/yr, services_per_beneficiary
+  outlier, NOT on any list. Already-caught (Centers Lab $21M) demoted to #9239.
+
+INCREMENT 2 (NEXT -- "more healthcare data" + more undetected detectors):
+* Part D ingest currently keeps only opioid_rate + totals. ENRICH CMS_COLUMN_MAP
+  with the behavioral fields CMS already ships and we drop: Opioid_LA_* (long-
+  acting -> diversion), Antpsyct_GE65_* + Bene_GE65 (antipsychotic-in-elderly ->
+  nursing-home chemical restraint), Brnd_* vs Gnrc_* (brand-when-generic ->
+  kickback/overbilling), Bene_Avg_Risk_Scre. ALTER raw.cms_partd_prescriber +
+  reload NJ 2023/2024 (cheap; NJ slice stays a few MB).
+* Add prospective detectors on those fields (specialty-relative percentile, vol
+  floors, cited calibration) -- each flags providers BEFORE any enforcement.
+* CAVEAT to keep honest: a high-$ behavioral outlier can be a legit high-volume
+  practice. Ranking is a lead queue, not a finding (page + methodology say so).
+
+CARRY-FORWARD pending: load NJ FEC itemized contributions -> super-PAC inflow
+signal (raw.fec_contribution still empty); owner decision on risk-score drift.
+
+--------------------------------------------------------------------------------
 SESSION 2026-06-09c (FRAUD-F8) -- highest-value lead ranking + 2024 recency
 ================================================================================
 
