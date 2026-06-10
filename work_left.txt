@@ -115,7 +115,25 @@ IN-FLIGHT SUBAGENT (this session):
   subagent's release_calendar seed to 047 on completion; runner keys on full
   filename stem so execution is unaffected meanwhile).
 
+DEPLOY 2026-06-09 (FRAUD-F7 engine -> prod):
+* Commit bd9c9a7 pushed to origin/main (Vercel frontend rebuild; provider
+  entity-kind additive + tsc clean, existing pages unaffected).
+* Neon prod (ep-calm-moon...us-east-2, neondb): migrations 100-111 + seeds
+  041-049 applied idempotently. Verified: fraud_signal_config=26, master
+  refresher documents 26, all 5 raw.* provider tables present, all 7
+  healthcare calibration rows correct. refresh_all('2024')=7357 obs (existing
+  FEC signals; the 7 healthcare signals add 0 -- CMS/NPPES substrate is empty
+  in prod, by design, no errors). DB size 118 MB (well under free 10 GB).
+* DORMANT pending data: healthcare signals fire only once CMS/NPPES data is
+  loaded. Data load NOT yet run in prod. Free path = NJ-filtered ingest
+  (ingesters default to NJ filter; fits free tier). Requires `pip install -e .`
+  first (new CMS/NPPES CLI entry points not yet in .venv) + large upstream
+  downloads (NPPES national ~10 GB ZIP is fetched then NJ-filtered locally).
+
 NEXT:
+* PROD DATA LOAD (free, NJ-filtered): reinstall CLI, then ingest CMS Part D /
+  Part B / Open Payments / NJ-Medicaid / NPPES (NJ filter) -> refresh_all to
+  light up the 7 healthcare signals in prod. Quota-safe; heavy local download.
 * Extend v_leie_name_resolved_npi to NJ-Medicaid exclusions (raw.nj_medicaid_
   exclusion) -> a state-exclusion name-resolved recall signal (mirror of mig 110
   for the NJ side; severity ~2-3, inferred + state, honest basis).
