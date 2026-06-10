@@ -75,6 +75,7 @@ EXPECTED_FORMULA_VERSIONS = frozenset({
     "2.9.0-fraud-name-resolved-excluded-provider-billing-v1",  # name_resolved_excluded_provider_billing
     "2.9.1-fraud-excluded-provider-received-open-payments-v1",  # excluded_provider_received_open_payments
     "3.3.0-fraud-antipsychotic-elderly-outlier-v1",  # antipsychotic_elderly_outlier
+    "3.6.0-fraud-provider-billing-growth-outlier-v1",  # provider_billing_growth_outlier
 })
 
 # All 20 fraud signals seeded across migrations 060-066, 092, 098, 101. Every
@@ -107,6 +108,7 @@ EXPECTED_SIGNAL_IDS: frozenset[str] = frozenset({
     "name_resolved_excluded_provider_billing",  # mig 110 / seed 048
     "excluded_provider_received_open_payments",  # mig 111 / seed 049
     "antipsychotic_elderly_outlier",   # mig 115 / seed 051
+    "provider_billing_growth_outlier",  # mig 118 / seed 052
 })
 
 
@@ -576,6 +578,9 @@ class TestEvidenceViewTokenSubstitution:
             # CMS Part D elderly-antipsychotic distributional outlier
             # (mig 115 / seed 051). Also entity_kind=provider.
             "antipsychotic_elderly_outlier":               "provider",
+            # CMS Part B year-over-year billing-growth outlier (bust-out)
+            # (mig 118 / seed 052). Also entity_kind=provider.
+            "provider_billing_growth_outlier":             "provider",
             # HHS-OIG-excluded provider x CMS Part B exact-NPI overlap
             # (mig 109 / seed 046). Also entity_kind=provider.
             "provider_excluded_billing_partb":             "provider",

@@ -133,8 +133,9 @@ def test_all_known_signals_seeded(fraud_db: psycopg.Connection) -> None:
       leie_bearing)
     + 1 from migration 111 (excluded_provider_received_open_payments,
       leie_bearing)
-    + 1 from migration 115 (antipsychotic_elderly_outlier, cms_utilization).
-    Twenty-seven signals total.
+    + 1 from migration 115 (antipsychotic_elderly_outlier, cms_utilization)
+    + 1 from migration 118 (provider_billing_growth_outlier, cms_temporal).
+    Twenty-eight signals total.
     """
     expected = {
         "entity_on_leie": ("leie_bearing", Decimal("0.00")),
@@ -208,6 +209,11 @@ def test_all_known_signals_seeded(fraud_db: psycopg.Connection) -> None:
         # value, not a federal payment); leie_bearing family, threshold 0.
         "excluded_provider_received_open_payments":
             ("leie_bearing", Decimal("0.00")),
+        # Migration 118: specialty-relative year-over-year Medicare-billing
+        # growth outlier (bust-out / NPI-takeover). First cms_temporal family --
+        # a dynamics outlier independent of the single-year level outliers.
+        "provider_billing_growth_outlier":
+            ("cms_temporal", Decimal("0.00")),
     }
 
     with fraud_db.cursor() as cur:

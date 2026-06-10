@@ -122,6 +122,11 @@ EXPECTED_SIGNAL_TO_REFRESHER = {
     # -------------------------------------------------------------
     "excluded_provider_received_open_payments":
         "derived.refresh_signal_excluded_provider_received_open_payments",
+    # -------------------------------------------------------------
+    # TIER 10: CMS-temporal billing-dynamics / bust-out (1 -- mig 118)
+    # -------------------------------------------------------------
+    "provider_billing_growth_outlier":
+        "derived.refresh_signal_provider_billing_growth_outlier",
 }
 
 
@@ -230,11 +235,11 @@ def test_master_invokes_at_least_18_refreshers(
     )
 
 
-def test_fraud_signal_config_has_exactly_27_signals(
+def test_fraud_signal_config_has_exactly_28_signals(
     master_db: psycopg.Connection,
 ):
     """
-    Pin the current 27-signal taxonomy (18 pre-mig 098;
+    Pin the current 28-signal taxonomy (18 pre-mig 098;
     nj_state_candidate_on_leie added 2026-05-12 -> 19;
     provider_excluded_billing added 2026-06-08 by mig 101 -> 20;
     state_excluded_provider_billing added 2026-06-09 by mig 105 -> 21;
@@ -243,14 +248,15 @@ def test_fraud_signal_config_has_exactly_27_signals(
     provider_excluded_billing_partb added 2026-06-09 by mig 109 -> 24;
     name_resolved_excluded_provider_billing added 2026-06-09 by mig 110 -> 25;
     excluded_provider_received_open_payments added 2026-06-09 by mig 111 -> 26;
-    antipsychotic_elderly_outlier added 2026-06-09 by mig 115 -> 27). If the
+    antipsychotic_elderly_outlier added 2026-06-09 by mig 115 -> 27;
+    provider_billing_growth_outlier added 2026-06-10 by mig 118 -> 28). If the
     count changes again, EXPECTED_SIGNAL_TO_REFRESHER MUST be updated alongside.
     """
     with master_db.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM derived.fraud_signal_config")
         (n,) = cur.fetchone()
-    assert n == 27, (
-        f"fraud_signal_config has {n} rows; expected 27. If you added a "
+    assert n == 28, (
+        f"fraud_signal_config has {n} rows; expected 28. If you added a "
         f"new signal, update EXPECTED_SIGNAL_TO_REFRESHER and re-run."
     )
 
@@ -358,7 +364,7 @@ def test_formula_version_registered(master_db: psycopg.Connection):
 def test_master_function_comment_documents_consolidation(
     master_db: psycopg.Connection,
 ):
-    """The function's pg_description must reflect the 26-signal scope."""
+    """The function's pg_description must reflect the current signal scope."""
     with master_db.cursor() as cur:
         cur.execute("""
             SELECT obj_description(
@@ -369,7 +375,7 @@ def test_master_function_comment_documents_consolidation(
         """)
         (comment,) = cur.fetchone()
     assert comment is not None, "function has no COMMENT ON"
-    assert "26" in comment, (
-        "function comment does not document the 26-signal scope: "
+    assert "28" in comment, (
+        "function comment does not document the 28-signal scope: "
         f"{comment!r}"
     )

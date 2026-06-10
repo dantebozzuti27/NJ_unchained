@@ -95,6 +95,9 @@ EXPECTED_SIGNALS: dict[str, tuple[int, str]] = {
     # cms_utilization (mig 115 / seed 051): specialty-relative elderly-
     # antipsychotic (chemical-restraint) outlier. Severity 4; empirical_pctile.
     "antipsychotic_elderly_outlier": (4, "empirical_pctile"),
+    # cms_temporal (mig 118 / seed 052): specialty-relative year-over-year
+    # Medicare-billing growth outlier (bust-out). Severity 4; empirical_pctile.
+    "provider_billing_growth_outlier": (4, "empirical_pctile"),
     # mig 111 / seed 049: Open Payments conflict-of-interest. Excluded
     # provider receiving an industry transfer of value (exact NPI match, but
     # not a federal payment) -> moderate lead, severity 3, oig_report basis.
@@ -142,6 +145,7 @@ EXPECTED_FORMULA_VERSIONS = {
     "2.9.0-fraud-name-resolved-excluded-provider-billing-v1",  # name_resolved_excluded_provider_billing
     "2.9.1-fraud-excluded-provider-received-open-payments-v1",  # excluded_provider_received_open_payments
     "3.3.0-fraud-antipsychotic-elderly-outlier-v1",  # antipsychotic_elderly_outlier
+    "3.6.0-fraud-provider-billing-growth-outlier-v1",  # provider_billing_growth_outlier
 }
 
 

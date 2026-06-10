@@ -77,9 +77,23 @@ VIABLE-BUT-NOT-YET-BUILT (data confirmed, fits storage, label-independent):
 
 NEXT (proposed order; all $0):
   TRACK A (now, NJ-only, no labels needed -- improves actionability):
-   A1. Build p3 provider_billing_growth_outlier (+ optional sudden-onset variant).
-       Full slice: migration + 4 cited constants + refresher + config + seed +
-       registry bumps (27->28 across the 4 registry tests) + dedicated test.
+   A1. [SHIPPED -- mig 118 + seed 052, applied to PROD] provider_billing_growth_
+       outlier: Part B year-over-year Medicare-paid growth (cycle/cycle-1), top
+       1% within specialty, gated by curr-$ floor ($50k), prev-$ denom floor
+       ($1k), min_bucket (50). NEW cms_temporal family (independent of the
+       single-year cms_utilization level outliers -> earns the diversity bonus +
+       n_families tiebreak). 4 cited constants; severity 4; reportability tier 3,
+       no bounty, raw_value_is_usd=FALSE. Master refresher 27 -> 28 signals.
+       PROD: 187 flagged for 2024, 0 for 2023 (prev=2022 absent, correct).
+       Top leads are textbook bust-outs: NP Michelle Destouche $3,181 ->
+       $3,199,042 (1005x); Pathology Gordana Katava $58k -> $7.77M; Gen Surgery
+       Earl Noyan $53k -> $4.7M -- all UNDETECTED. 8 providers now n_families=2
+       (temporal + utilization), incl. the $25.9M top undetected lead. Harness
+       lift still 0 (label scarcity, as expected/documented). 17 dedicated tests
+       + 4 registry bumps green; ruff+mypy clean. NOTE: sudden-onset companion
+       (absent prior year, large curr; 246 candidates) still a future signal.
+   A1-OLD. (original plan, now done) Full slice: migration + 4 constants +
+       refresher + config + seed + registry bumps + dedicated test.
    A2. Deepen corroboration correctly: ensure independent families increment
        n_families (the temporal family does; same-substrate variants must NOT, to
        respect conditional independence -- see mig 116 note).
