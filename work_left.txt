@@ -1,4 +1,105 @@
 ================================================================================
+SESSION 2026-06-09e (FRAUD-F8 PRECISION) -- "more precise than just anomalies?"
+================================================================================
+
+OWNER STEER: "how can we make this more precise than just anomalies, we probably
+need more data right" -> chose ALL five precision levers -> then "both,
+interleaved, re-run harness to prove lift" -> then "keep it free" -> "pause,
+get updated in vercel, plan whats next."
+
+CORE EPISTEMIC FRAME (the answer to the question):
+An anomaly is not a fraud. Our detectors are unsupervised tail-outliers (top 1%
+of specialty) -- max recall, unknown precision. Precision rises three ways:
+(1) mechanism specificity (encode the scheme, not "unusual"), (2) corroboration
+from conditionally-INDEPENDENT signals, (3) supervised calibration vs ground
+truth. Only (3) needs labels; we tried it first because it tells us whether the
+rest is even working.
+
+SHIPPED (committed e5e4c53, applied to PROD):
+* db/migrations/117_fraud_signal_validation_harness.sql -- derived.
+  v_signal_validation. Per (cycle, behavioral signal): precision = P(on an
+  exclusion list | flagged), base_rate = sanctioned rate in the CMS billing
+  universe, lift = precision/base_rate. Ground truth = NPIs flagged by any
+  is_prior_sanction signal (LEIE/NJ-Medicaid/SAM exclusion-billing). Emits
+  precision_wilson_lo95 (Wilson 95% LB) + raw counts so thin estimates aren't
+  over-read. lift/base_rate NULL when a cycle has no labels (explicit gap, never
+  imputed). Read-only view; no new signals. formula 3.5.0-fraud-signal-
+  validation-harness-v1. tests/test_fraud_signal_validation_harness.py 7/7 green.
+
+THE DECISIVE FINDING (this is why we paused to plan, not churn):
+PROD run of the harness shows the behavioral detectors do NOT reliably
+concentrate known fraud -- true-positive overlaps are 0-3, Wilson LBs ~0:
+   2024 opioid     univ 52252 pos 52 flag 978 tp 1  base .00100 lift 1.03
+   2024 antipsych  univ 52252 pos 52 flag  16 tp 0  base .00100 lift 0.00
+   2024 services   univ 52252 pos 52 flag 315 tp 0  base .00100 lift 0.00
+   2023 services   univ 50759 pos 70 flag 308 tp 2  base .00138 lift 4.71 (noise)
+   2023 opioid     univ 50759 pos 70 flag 952 tp 3  base .00138 lift 2.29 (noise)
+The lift>1 numbers are 2-3 overlaps = statistically meaningless.
+
+ROOT CAUSE = label scarcity at NJ scale, NOT bad detectors:
+* Backward label (excluded & still billing): ~0.1% of universe (52-70 NPIs).
+* FORWARD label (billed in T, excluded AFTER T) is even thinner: 2023 -> 7,
+  2024 -> 3. Unusable for lift estimation.
+* Why: CMS data is NJ-only (storage cap), LEIE NPI coverage is partial, and many
+  excluded persons (aides/nurses/owners) never appear in the physician/prescriber
+  summary files.
+
+STORAGE = THE BINDING CONSTRAINT (quantified on PROD):
+* DB 266 MiB / 512 MB Neon free cap -> ~246 MiB headroom.
+* NJ-only Part D 2yr already = 112 MiB (73,628 rows, ~1.6 KiB/row).
+* National Part D ~3.4 GiB, Part B ~0.9 GiB, by-Service ~9 GiB nat'l / 0.5-1 GiB
+  NJ, Open Payments ~14M rows/yr nat'l. ANY national load is 5-30x over the cap.
+* raw.cms_open_payments_general and raw.nppes_provider are EMPTY (0 rows) -> the
+  Open-Payments kickback signal (mig 111) and NPPES recall signal (mig 110) are
+  DORMANT until loaded.
+=> Label-based precision validation is not achievable on the Neon free tier.
+   The $0 unlock is the AGENTS.md production target: Oracle Cloud Always Free VM
+   (200 GB block storage, $0/mo). That removes the 512 MB ceiling at zero cost.
+
+EMPIRICAL KILLS (checked the data BEFORE building -- did NOT build these):
+* p2 RISK-ADJUSTMENT (Bene_Avg_Risk_Scre) -- CANCELLED. Acuity is uncorrelated
+  with our metrics: corr(risk, opioid_rate)=-0.06; corr(risk, services/bene)=
+  0.03; corr(risk, pymt/bene)=0.06. Adjusting by a non-confounder is theater;
+  the residual would equal the raw rate. (Risk score is 100% populated -- the
+  problem is it doesn't predict utilization at provider-aggregate grain.)
+
+VIABLE-BUT-NOT-YET-BUILT (data confirmed, fits storage, label-independent):
+* p3 TEMPORAL BUST-OUT (Part B YoY payment growth, 2023->2024). 34,981 providers
+  in both years; growth p50=1.0 / p95=2.73 / p99=8.54 / max=1005x. Lead sets:
+  187 grew >=5x AND >=$100k 2024 payment; 246 "sudden-onset" (absent 2023, >=$100k
+  2024). Design ready: signal provider_billing_growth_outlier, within-specialty
+  (prvdr_type) CUME_DIST of growth gated by current-$ floor + prev-$ denom floor
+  + min_bucket; raw_value=growth ratio; severity 4; reportability tier 3, no
+  bounty, not prior-sanction, raw_value_is_usd=FALSE. Mirrors mig 107 exactly.
+  NOTE: bust-out is a NEW epistemic family -> consider widening signal_family
+  CHECK with 'cms_temporal' so it COUNTS as cross-family corroboration with the
+  utilization detectors (mig 064/105/106 show the DROP+ADD CONSTRAINT pattern).
+
+NEXT (proposed order; all $0):
+  TRACK A (now, NJ-only, no labels needed -- improves actionability):
+   A1. Build p3 provider_billing_growth_outlier (+ optional sudden-onset variant).
+       Full slice: migration + 4 cited constants + refresher + config + seed +
+       registry bumps (27->28 across the 4 registry tests) + dedicated test.
+   A2. Deepen corroboration correctly: ensure independent families increment
+       n_families (the temporal family does; same-substrate variants must NOT, to
+       respect conditional independence -- see mig 116 note).
+   A3. Surface the harness in the UI (deferred): a "signal validation" panel on
+       /leads that shows precision/lift/Wilson-LB + the small-sample caveat, so
+       the honesty is visible, not buried in a view.
+  TRACK B (the real precision unlock, $0 via Oracle Always Free):
+   B1. Stand up Postgres on the Oracle Cloud Always Free A1.Flex VM (200 GB).
+       Migrate schema + reload data there. Removes the 512 MB ceiling.
+   B2. Load NATIONAL CMS (Part B + Part D) + by-Service + Open Payments + NPPES.
+       Now thousands of fraud labels AND claim-level scheme structure exist.
+   B3. Mechanism detectors that need scale/structure: upcoding (E/M code-mix
+       skew, by-Service), impossible-day (summed service time > hours), kickback
+       (Open Payments $ correlated with prescribing the payer's drug, needs Part D
+       by-Drug). Re-run the harness -> finally prove lift.
+  OPEN OWNER DECISIONS:
+   - Track A now + scope Oracle next (recommended), or Oracle first?
+   - Pre-existing risk-score drift (97.34 vs 86.47) still unresolved.
+
+================================================================================
 SESSION 2026-06-09d (FRAUD-F8 reframe) -- rank UNDETECTED fraud, not the caught
 ================================================================================
 
