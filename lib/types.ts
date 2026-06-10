@@ -267,6 +267,69 @@ export interface NjStateCandidate {
   notes: string | null;
 }
 
+/**
+ * One flagged healthcare provider for the /fraud queue. NPI-keyed; the
+ * preview is the highest-severity firing signal (mirrors NjAnomalyCard
+ * but provider-scoped and cross-cycle — provider cycle = CMS data_year,
+ * which differs from the FEC cycle, so the queue is not cycle-filtered).
+ */
+export interface ProviderRiskCard {
+  /** CMS data_year / program_year the observation belongs to. */
+  cycle: string;
+  /** 10-digit NPI. */
+  entity_id: string;
+  display_name: string | null;
+  is_nj: boolean;
+  risk_score: number;
+  n_signals: number;
+  preview_signal_id: string;
+  preview_severity: number;
+  preview_peer_percentile: number | null;
+  preview_explanation: string;
+  preview_citation_authority: string | null;
+  /** Dollar exposure carried by the preview signal (Medicare paid, drug cost, transfers of value). */
+  preview_raw_value: number | null;
+}
+
+/**
+ * One entry in the healthcare-fraud SIGNAL CATALOG. Joins
+ * derived.fraud_signal_config with the three ref.fraud_signal_* tables.
+ * This is reference data that is populated the moment the seeds land —
+ * so the catalog renders real, citation-backed content even before any
+ * CMS/NPPES provider data is loaded (the queue is empty until then).
+ */
+export interface HealthcareSignalCatalogEntry {
+  signal_id: string;
+  signal_family: string;
+  severity_level: number;
+  calibration_basis: string | null;
+  /** The federal/state predicate the signal codifies (human prose). */
+  rule_text: string | null;
+  citation_authority: string | null;
+  citation_section: string | null;
+  citation_url: string | null;
+  precedent_summary: string | null;
+  precedent_url: string | null;
+  upstream_source: string | null;
+}
+
+/**
+ * Substrate-honesty status for the /fraud page: how much CMS/NPPES data
+ * is loaded and how many provider observations the engine has emitted.
+ * Drives the "engine live, awaiting data" vs "N providers flagged"
+ * branch — the platform never pretends to results it doesn't have.
+ */
+export interface HealthcareSubstrateStatus {
+  n_partd_prescriber: number;
+  n_physician_provider: number;
+  n_open_payments: number;
+  n_nj_medicaid_exclusion: number;
+  n_nppes_provider: number;
+  n_leie: number;
+  /** Provider-kind rows in derived.fraud_signal_observation. */
+  n_provider_observations: number;
+}
+
 export interface PlatformStatus {
   db_reachable: boolean;
   error?: string;

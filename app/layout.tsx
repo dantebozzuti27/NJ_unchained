@@ -48,6 +48,12 @@ export default function RootLayout({
                 Risk queue
               </Link>
               <Link
+                href="/fraud"
+                className="hover:underline underline-offset-4 font-semibold text-teal-600 dark:text-teal-400"
+              >
+                Healthcare
+              </Link>
+              <Link
                 href="/about"
                 className="hover:underline underline-offset-4"
               >

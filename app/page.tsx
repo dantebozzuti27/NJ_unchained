@@ -143,6 +143,12 @@ function Hero({ headline }: { headline: NjAffordabilityHeadline | null }) {
           >
             Risk queue
           </Link>
+          <Link
+            href="/fraud"
+            className="inline-flex items-center gap-2 rounded-lg border border-teal-300 dark:border-teal-800 bg-teal-50 dark:bg-teal-950/40 px-5 py-2.5 text-sm font-semibold text-teal-800 dark:text-teal-200 hover:bg-teal-100 dark:hover:bg-teal-950/70"
+          >
+            Healthcare fraud
+          </Link>
         </div>
 
         {hasData && (

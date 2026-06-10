@@ -25,14 +25,32 @@ import type {
   EntityHeaderInfo,
   EntityKind,
   EvidenceCard,
+  HealthcareSignalCatalogEntry,
+  HealthcareSubstrateStatus,
   NjAnomalyCard,
   NjCivicIntegritySummary,
   NjFederalOfficial,
   NjStateCandidate,
   PlatformStatus,
+  ProviderRiskCard,
   RiskRow,
   SignalRow,
 } from "./types";
+
+/**
+ * The seven NPI-keyed healthcare-fraud signals (FRAUD-F7). Pinned here so
+ * the catalog + queue read exactly the provider-domain signals and never
+ * accidentally fold in FEC/SAM signals that share the leie_bearing family.
+ */
+export const HEALTHCARE_SIGNAL_IDS = [
+  "provider_excluded_billing",
+  "provider_excluded_billing_partb",
+  "state_excluded_provider_billing",
+  "opioid_prescribing_outlier",
+  "services_per_beneficiary_outlier",
+  "name_resolved_excluded_provider_billing",
+  "excluded_provider_received_open_payments",
+] as const;
 
 const VALID_KINDS: ReadonlySet<EntityKind> = new Set([
   "candidate",
@@ -1008,4 +1026,165 @@ export async function getEntityEvidenceCards(opts: {
     upstream_source:
       r.upstream_source == null ? null : String(r.upstream_source),
   }));
+}
+
+/* ================================================================== */
+/*  Healthcare-provider fraud (FRAUD-F7) — powers /fraud              */
+/* ================================================================== */
+
+/**
+ * Top flagged healthcare providers across ALL provider cycles (provider
+ * cycle = CMS data_year, which differs from the FEC cycle, so this is
+ * intentionally NOT cycle-filtered). One row per NPI (worst observation
+ * wins), ordered by composite risk score. Reads v_entity_fraud_evidence
+ * for display/preview and v_entity_fraud_risk for the score. Returns []
+ * cleanly when no provider data is loaded.
+ */
+export async function listTopProviderRisk(opts: {
+  limit?: number;
+}): Promise<ProviderRiskCard[]> {
+  const sql = getSql();
+  const limit = Math.min(Math.max(opts.limit ?? 25, 1), 100);
+  const rows = (await sql`
+    WITH deduped AS (
+      SELECT DISTINCT ON (entity_id)
+        cycle, entity_id, display_name, is_nj,
+        signal_id, severity, peer_percentile, raw_value,
+        rendered_explanation, citation_authority
+      FROM derived.v_entity_fraud_evidence
+      WHERE entity_kind = 'provider'
+      ORDER BY entity_id,
+               severity DESC NULLS LAST,
+               peer_percentile DESC NULLS LAST
+    )
+    SELECT
+      d.cycle,
+      d.entity_id,
+      d.display_name,
+      d.is_nj,
+      d.signal_id                                  AS preview_signal_id,
+      d.severity::INT                              AS preview_severity,
+      d.peer_percentile::FLOAT8                    AS preview_peer_percentile,
+      d.raw_value::FLOAT8                          AS preview_raw_value,
+      d.rendered_explanation                       AS preview_explanation,
+      d.citation_authority                         AS preview_citation_authority,
+      COALESCE(r.risk_score, 0)::FLOAT8            AS risk_score,
+      COALESCE(r.n_signals_fired, 0)::INT          AS n_signals
+    FROM deduped d
+    LEFT JOIN derived.v_entity_fraud_risk r
+      ON  r.entity_kind = 'provider'
+      AND r.cycle = d.cycle
+      AND r.entity_id = d.entity_id
+    ORDER BY r.risk_score DESC NULLS LAST, d.severity DESC, d.entity_id ASC
+    LIMIT ${limit}
+  `) as Record<string, unknown>[];
+
+  return rows.map((r) => ({
+    cycle: String(r.cycle),
+    entity_id: String(r.entity_id),
+    display_name: r.display_name == null ? null : String(r.display_name),
+    is_nj: Boolean(r.is_nj),
+    risk_score: Number(r.risk_score),
+    n_signals: Number(r.n_signals),
+    preview_signal_id: String(r.preview_signal_id),
+    preview_severity: Number(r.preview_severity),
+    preview_peer_percentile:
+      r.preview_peer_percentile == null
+        ? null
+        : Number(r.preview_peer_percentile),
+    preview_explanation: String(r.preview_explanation ?? ""),
+    preview_citation_authority:
+      r.preview_citation_authority == null
+        ? null
+        : String(r.preview_citation_authority),
+    preview_raw_value:
+      r.preview_raw_value == null ? null : Number(r.preview_raw_value),
+  }));
+}
+
+/**
+ * The healthcare-fraud signal CATALOG: the seven provider-domain signals
+ * with their severity, calibration basis, federal/state predicate, and
+ * citation. Reads ref.fraud_signal_* (populated by the seeds) so the
+ * catalog is real content even before any provider data is loaded.
+ */
+export async function getHealthcareSignalCatalog(): Promise<
+  HealthcareSignalCatalogEntry[]
+> {
+  const sql = getSql();
+  const ids = [...HEALTHCARE_SIGNAL_IDS];
+  const rows = (await sql`
+    SELECT
+      cfg.signal_id,
+      cfg.signal_family,
+      sc.severity_level::INT                AS severity_level,
+      sc.calibration_basis,
+      he.rule_text,
+      he.citation_authority,
+      he.citation_section,
+      he.citation_url,
+      sc.precedent_summary,
+      sc.precedent_url,
+      eut.upstream_source
+    FROM derived.fraud_signal_config cfg
+    LEFT JOIN ref.fraud_signal_severity_calibration sc
+      ON sc.signal_id = cfg.signal_id
+    LEFT JOIN ref.fraud_signal_human_explanation he
+      ON he.signal_id = cfg.signal_id
+    LEFT JOIN ref.fraud_signal_evidence_url_template eut
+      ON eut.signal_id = cfg.signal_id
+    WHERE cfg.signal_id = ANY(${ids})
+    ORDER BY sc.severity_level DESC NULLS LAST, cfg.signal_id ASC
+  `) as Record<string, unknown>[];
+
+  return rows.map((r) => ({
+    signal_id: String(r.signal_id),
+    signal_family: String(r.signal_family ?? ""),
+    severity_level: Number(r.severity_level ?? 0),
+    calibration_basis:
+      r.calibration_basis == null ? null : String(r.calibration_basis),
+    rule_text: r.rule_text == null ? null : String(r.rule_text),
+    citation_authority:
+      r.citation_authority == null ? null : String(r.citation_authority),
+    citation_section:
+      r.citation_section == null ? null : String(r.citation_section),
+    citation_url: r.citation_url == null ? null : String(r.citation_url),
+    precedent_summary:
+      r.precedent_summary == null ? null : String(r.precedent_summary),
+    precedent_url:
+      r.precedent_url == null ? null : String(r.precedent_url),
+    upstream_source:
+      r.upstream_source == null ? null : String(r.upstream_source),
+  }));
+}
+
+/**
+ * Substrate-honesty status for /fraud: row counts of the loaded CMS/NPPES
+ * tables + the count of provider observations the engine has emitted.
+ * to_regclass guards keep this from throwing if a table is somehow absent
+ * (partial deploy); a hard failure degrades to all-zeros in the caller.
+ */
+export async function getHealthcareSubstrateStatus(): Promise<HealthcareSubstrateStatus> {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT
+      (SELECT COUNT(*) FROM raw.cms_partd_prescriber)::INT      AS n_partd,
+      (SELECT COUNT(*) FROM raw.cms_physician_provider)::INT    AS n_physician,
+      (SELECT COUNT(*) FROM raw.cms_open_payments_general)::INT AS n_open_payments,
+      (SELECT COUNT(*) FROM raw.nj_medicaid_exclusion)::INT     AS n_nj_med,
+      (SELECT COUNT(*) FROM raw.nppes_provider)::INT            AS n_nppes,
+      (SELECT COUNT(*) FROM raw.hhs_oig_leie)::INT              AS n_leie,
+      (SELECT COUNT(*) FROM derived.fraud_signal_observation
+         WHERE entity_kind = 'provider')::INT                   AS n_obs
+  `) as Record<string, unknown>[];
+  const r = rows[0] ?? {};
+  return {
+    n_partd_prescriber: Number(r.n_partd ?? 0),
+    n_physician_provider: Number(r.n_physician ?? 0),
+    n_open_payments: Number(r.n_open_payments ?? 0),
+    n_nj_medicaid_exclusion: Number(r.n_nj_med ?? 0),
+    n_nppes_provider: Number(r.n_nppes ?? 0),
+    n_leie: Number(r.n_leie ?? 0),
+    n_provider_observations: Number(r.n_obs ?? 0),
+  };
 }
