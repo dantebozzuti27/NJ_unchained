@@ -74,6 +74,28 @@ EXPECTED_SIGNALS: dict[str, tuple[int, str]] = {
     "donor_on_leie": (5, "empirical_pctile"),
     "candidate_funded_by_excluded_donors": (5, "empirical_pctile"),
     "nj_state_candidate_on_leie": (5, "oig_report"),
+    "provider_excluded_billing": (5, "oig_report"),  # mig 101 / seed 041
+    # mig 109 / seed 046: Part-B companion (LEIE x CMS Part B). Same HHS-OIG
+    # authority + severity 5 (payment-prohibition overlap, 42 USC 1320a-7a).
+    "provider_excluded_billing_partb": (5, "oig_report"),
+    # mig 110 / seed 048: NPPES identity-recall. Name-only LEIE exclusion
+    # resolved to a unique NPI billing CMS. Inferred identity -> severity 3.
+    "name_resolved_excluded_provider_billing": (3, "inferred_identity"),
+    # state_exclusion (mig 105 / seed 043): NJ Medicaid debarment x CMS
+    # billing. Severity 4 (HIGH lead, not a per-se federal prohibition);
+    # basis state_exclusion (NJ OSC authority).
+    "state_excluded_provider_billing": (4, "state_exclusion"),
+    # cms_utilization (mig 106 / seed 044): specialty-relative opioid
+    # prescribing tail outlier. Severity 4 (HIGH lead); basis
+    # empirical_pctile (versioned platform calibration, not enforcement).
+    "opioid_prescribing_outlier": (4, "empirical_pctile"),
+    # cms_utilization (mig 107 / seed 045): specialty-relative Part B
+    # services-per-beneficiary overutilization outlier.
+    "services_per_beneficiary_outlier": (4, "empirical_pctile"),
+    # mig 111 / seed 049: Open Payments conflict-of-interest. Excluded
+    # provider receiving an industry transfer of value (exact NPI match, but
+    # not a federal payment) -> moderate lead, severity 3, oig_report basis.
+    "excluded_provider_received_open_payments": (3, "oig_report"),
     # sam_bearing
     "entity_excluded_via_sam_uei": (5, "far_authority"),
     "donor_on_sam": (5, "empirical_pctile"),
@@ -109,6 +131,13 @@ EXPECTED_FORMULA_VERSIONS = {
     "2.1.0-fraud-evidence-substrate-v1",        # original 17 signals
     "2.3.0-fraud-strict-address-v1",            # entity_on_leie_strict_address
     "2.7.1-fraud-nj-state-candidate-on-leie-v1",  # nj_state_candidate_on_leie
+    "2.8.1-fraud-provider-excluded-billing-v1",  # provider_excluded_billing
+    "2.8.5-fraud-state-excluded-provider-billing-v1",  # state_excluded_provider_billing
+    "2.8.6-fraud-opioid-prescribing-outlier-v1",  # opioid_prescribing_outlier
+    "2.8.7-fraud-services-per-beneficiary-outlier-v1",  # services_per_beneficiary_outlier
+    "2.8.9-fraud-provider-excluded-billing-partb-v1",  # provider_excluded_billing_partb
+    "2.9.0-fraud-name-resolved-excluded-provider-billing-v1",  # name_resolved_excluded_provider_billing
+    "2.9.1-fraud-excluded-provider-received-open-payments-v1",  # excluded_provider_received_open_payments
 }
 
 

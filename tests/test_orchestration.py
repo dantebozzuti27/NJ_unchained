@@ -32,7 +32,8 @@ def test_all_assets_have_expected_key_shape() -> None:
     from orchestration.assets import ALL_ASSETS
 
     assert len(ALL_ASSETS) >= 15, (
-        "expected 9 raw (incl PUMS) + 6 derived (incl PUMS PUMA + county) assets"
+        "expected >= 15 assets: 10 raw (incl PUMS) + 3 FEC + LEIE + "
+        "USAspending + 4 FRAUD-F7 CMS/NJ healthcare raw + derived surface"
     )
     for asset_def in ALL_ASSETS:
         for key in asset_def.keys:
@@ -531,6 +532,68 @@ def test_pums_burden_county_segmented_depends_on_both_pums_raw() -> None:
         "depend on BOTH raw PUMS assets. The crosswalk is ref data, not "
         "an asset, so it intentionally does not appear here."
     )
+
+
+def test_fraud_f7_healthcare_raw_assets_registered() -> None:
+    """The five FRAUD-F7 CMS / NJ / NPPES healthcare raw assets must be wired in.
+
+    Pins the asset-graph contract for the FRAUD-F7 substrate slice. Each
+    asset must:
+
+    * be present in ALL_ASSETS with a 2-deep ``raw.<table>`` key,
+    * declare a FreshnessPolicy (raw-asset hygiene -- enforced globally by
+      test_raw_assets_declare_freshness_policy, asserted here too so a
+      regression names the offending FRAUD-F7 key directly),
+    * declare ZERO upstream deps (these are leaf raw sources, exactly like
+      raw.hhs_oig_leie which they mirror), and
+    * have >= 1 AssetCheck registered in ALL_ASSET_CHECKS (the
+      every-raw-asset-has-a-gate contract, asserted here for the new keys).
+    """
+    from orchestration.asset_checks import ALL_ASSET_CHECKS
+    from orchestration.assets import ALL_ASSETS
+
+    expected_keys = {
+        "raw/cms_partd_prescriber",
+        "raw/cms_physician_provider",
+        "raw/cms_open_payments_general",
+        "raw/nj_medicaid_exclusion",
+        "raw/nppes_provider",
+    }
+
+    by_key = {
+        next(iter(a.keys)).to_user_string(): a
+        for a in ALL_ASSETS
+    }
+    missing = expected_keys - set(by_key)
+    assert not missing, (
+        f"FRAUD-F7 healthcare raw assets missing from ALL_ASSETS: "
+        f"{sorted(missing)}. Each CMS / NJ substrate ingester must have a "
+        "registered raw-ingestion asset (mirrors raw.hhs_oig_leie)."
+    )
+
+    checked_keys: set[str] = set()
+    for chk in ALL_ASSET_CHECKS:
+        for spec in chk.check_specs:
+            checked_keys.add(spec.asset_key.to_user_string())
+
+    for key_str in expected_keys:
+        asset_def = by_key[key_str]
+        key = next(iter(asset_def.keys))
+        assert key.path[0] == "raw" and len(key.path) == 2, (
+            f"{key_str} must be a 2-deep raw.<table> key"
+        )
+        spec = asset_def.specs_by_key[key]
+        assert spec.freshness_policy is not None, (
+            f"{key_str} must declare a FreshnessPolicy"
+        )
+        assert len(spec.deps) == 0, (
+            f"{key_str} must be a leaf raw source with no upstream deps "
+            f"(mirrors raw.hhs_oig_leie); got {[d.asset_key for d in spec.deps]}"
+        )
+        assert key_str in checked_keys, (
+            f"{key_str} has no AssetCheck in ALL_ASSET_CHECKS; every raw "
+            "asset must have at least one quality gate."
+        )
 
 
 def test_dol_fiscal_quarter_helper() -> None:

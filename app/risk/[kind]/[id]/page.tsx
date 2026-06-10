@@ -33,6 +33,7 @@ const KIND_LABELS: Record<string, string> = {
   contractor: "Contractor",
   address: "Address cluster",
   nj_state_candidate: "NJ state candidate",
+  provider: "Healthcare provider",
 };
 
 const PARTY_STYLE: Record<string, { fg: string; bg: string }> = {

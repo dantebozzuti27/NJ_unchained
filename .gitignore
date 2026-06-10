@@ -28,6 +28,7 @@ dist/
 # reproducible from `sources_manifest.toml` + the migrations + the ingesters.
 data/manual/
 data/raw/
+data/cache/
 data/staging/
 !data/staging/recompute/
 !data/staging/recompute/.gitkeep

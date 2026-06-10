@@ -67,9 +67,16 @@ EXPECTED_FORMULA_VERSIONS = frozenset({
     "2.2.0-fraud-evidence-view-v1",                # original 17 URL templates
     "2.3.0-fraud-strict-address-v1",               # entity_on_leie_strict_address
     "2.7.1-fraud-nj-state-candidate-on-leie-v1",   # nj_state_candidate_on_leie
+    "2.8.1-fraud-provider-excluded-billing-v1",    # provider_excluded_billing
+    "2.8.5-fraud-state-excluded-provider-billing-v1",  # state_excluded_provider_billing
+    "2.8.6-fraud-opioid-prescribing-outlier-v1",   # opioid_prescribing_outlier
+    "2.8.7-fraud-services-per-beneficiary-outlier-v1",  # services_per_beneficiary_outlier
+    "2.8.9-fraud-provider-excluded-billing-partb-v1",  # provider_excluded_billing_partb
+    "2.9.0-fraud-name-resolved-excluded-provider-billing-v1",  # name_resolved_excluded_provider_billing
+    "2.9.1-fraud-excluded-provider-received-open-payments-v1",  # excluded_provider_received_open_payments
 })
 
-# All 19 fraud signals seeded across migrations 060-066, 092, 098. Every
+# All 20 fraud signals seeded across migrations 060-066, 092, 098, 101. Every
 # one MUST have a URL-template row -- the substrate is incomplete otherwise.
 EXPECTED_SIGNAL_IDS: frozenset[str] = frozenset({
     "candidate_no_pcc",
@@ -91,6 +98,13 @@ EXPECTED_SIGNAL_IDS: frozenset[str] = frozenset({
     "candidate_funded_by_nj_contractor_employees",
     "donor_employed_by_nj_contractor",
     "nj_state_candidate_on_leie",      # mig 098 / seed 023
+    "provider_excluded_billing",       # mig 101 / seed 041
+    "state_excluded_provider_billing", # mig 105 / seed 043
+    "opioid_prescribing_outlier",      # mig 106 / seed 044
+    "services_per_beneficiary_outlier",  # mig 107 / seed 045
+    "provider_excluded_billing_partb",  # mig 109 / seed 046
+    "name_resolved_excluded_provider_billing",  # mig 110 / seed 048
+    "excluded_provider_received_open_payments",  # mig 111 / seed 049
 })
 
 
@@ -363,7 +377,7 @@ class TestSeed020Coverage:
     ) -> None:
         whitelist = {
             "FEC.gov", "OIG.gov", "SAM.gov", "USAspending.gov",
-            "platform-internal",
+            "platform-internal", "NJ.gov", "CMS.gov",
         }
         with evidence_db.cursor() as cur:
             cur.execute("""
@@ -541,6 +555,31 @@ class TestEvidenceViewTokenSubstitution:
             # evidence view's CASE-on-entity_kind branch resolves display_name
             # and is_nj from ref.nj_state_candidate (seeded by 022).
             "nj_state_candidate_on_leie":                  "nj_state_candidate",
+            # CMS-Medicare x LEIE cross-source (mig 101 / seed 041). The only
+            # signal whose entity_kind is provider; the L3 evidence view's
+            # provider_meta CTE resolves display_name + is_nj from
+            # raw.cms_partd_prescriber (empty here, so display_name falls back
+            # to the NPI and is_nj=FALSE -- no token residue either way).
+            "provider_excluded_billing":                   "provider",
+            # NJ-Medicaid-exclusion x CMS-billing cross-source (mig 105 /
+            # seed 043). Also entity_kind=provider; shares the provider eid
+            # branch below.
+            "state_excluded_provider_billing":             "provider",
+            # CMS Part D opioid-prescribing distributional outlier (mig 106 /
+            # seed 044). Also entity_kind=provider.
+            "opioid_prescribing_outlier":                  "provider",
+            # CMS Part B services-per-beneficiary distributional outlier
+            # (mig 107 / seed 045). Also entity_kind=provider.
+            "services_per_beneficiary_outlier":            "provider",
+            # HHS-OIG-excluded provider x CMS Part B exact-NPI overlap
+            # (mig 109 / seed 046). Also entity_kind=provider.
+            "provider_excluded_billing_partb":             "provider",
+            # Name-only LEIE exclusion resolved via NPPES to a billing NPI
+            # (mig 110 / seed 048). Also entity_kind=provider.
+            "name_resolved_excluded_provider_billing":     "provider",
+            # HHS-OIG-excluded provider receiving CMS Open Payments transfers
+            # of value (mig 111 / seed 049). Also entity_kind=provider.
+            "excluded_provider_received_open_payments":    "provider",
         }
 
         with evidence_db.cursor() as cur:
@@ -574,6 +613,11 @@ class TestEvidenceViewTokenSubstitution:
                 # evidence view's nj_state_meta CTE (mig 098) resolves
                 # full_name + is_nj=TRUE from this candidate_id.
                 eid = "NJ-STATE-SHERRILL-MIKIE-2025-GOVERNOR"
+            elif entity_kind == "provider":
+                # NPI-keyed. raw.cms_partd_prescriber is empty in this
+                # fixture, so the provider_meta CTE finds no row and the
+                # view falls back to entity_id for display_name.
+                eid = "1234567893"
             else:
                 pytest.fail(f"unexpected entity_kind in seed: {entity_kind!r}")
 

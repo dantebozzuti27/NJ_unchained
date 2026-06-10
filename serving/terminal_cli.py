@@ -2293,7 +2293,10 @@ def _fmt_signals_short(signals: list[str] | None, max_len: int = 40) -> str:
     "entity_kind",
     type=click.Choice(sorted(VALID_ENTITY_KINDS)),
     default=None,
-    help="Restrict to one entity kind (committee/candidate/treasurer/address/donor_cluster).",
+    help=(
+        "Restrict to one entity kind. Domain mirrors the L1 CHECK "
+        "constraint; run with --help to see the current allowed values."
+    ),
 )
 @click.option(
     "--signal-id",

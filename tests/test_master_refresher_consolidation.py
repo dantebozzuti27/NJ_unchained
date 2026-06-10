@@ -91,6 +91,35 @@ EXPECTED_SIGNAL_TO_REFRESHER = {
         "derived.refresh_signal_candidate_funded_by_nj_contractor_employees",
     "donor_employed_by_nj_contractor":
         "derived.refresh_signal_donor_employed_by_nj_contractor",
+    # -------------------------------------------------------------
+    # TIER 5: CMS-Medicare-bearing federal-exclusion (2 -- mig 101, 109)
+    # -------------------------------------------------------------
+    "provider_excluded_billing":
+        "derived.refresh_signal_provider_excluded_billing",
+    "provider_excluded_billing_partb":
+        "derived.refresh_signal_provider_excluded_billing_partb",
+    # -------------------------------------------------------------
+    # TIER 6: NJ-state-exclusion-bearing (1 -- mig 105)
+    # -------------------------------------------------------------
+    "state_excluded_provider_billing":
+        "derived.refresh_signal_state_excluded_provider_billing",
+    # -------------------------------------------------------------
+    # TIER 7: CMS-utilization peer-relative outliers (2 -- mig 106, 107)
+    # -------------------------------------------------------------
+    "opioid_prescribing_outlier":
+        "derived.refresh_signal_opioid_prescribing_outlier",
+    "services_per_beneficiary_outlier":
+        "derived.refresh_signal_services_per_beneficiary_outlier",
+    # -------------------------------------------------------------
+    # TIER 8: NPPES identity-resolution recall (1 -- mig 110)
+    # -------------------------------------------------------------
+    "name_resolved_excluded_provider_billing":
+        "derived.refresh_signal_name_resolved_excluded_provider_billing",
+    # -------------------------------------------------------------
+    # TIER 9: Open-Payments conflict-of-interest (1 -- mig 111)
+    # -------------------------------------------------------------
+    "excluded_provider_received_open_payments":
+        "derived.refresh_signal_excluded_provider_received_open_payments",
 }
 
 
@@ -199,19 +228,27 @@ def test_master_invokes_at_least_18_refreshers(
     )
 
 
-def test_fraud_signal_config_has_exactly_19_signals(
+def test_fraud_signal_config_has_exactly_26_signals(
     master_db: psycopg.Connection,
 ):
     """
-    Pin the current 19-signal taxonomy (was 18 pre-mig 098;
-    nj_state_candidate_on_leie added 2026-05-12). If the count changes
-    again, EXPECTED_SIGNAL_TO_REFRESHER MUST be updated alongside.
+    Pin the current 26-signal taxonomy (18 pre-mig 098;
+    nj_state_candidate_on_leie added 2026-05-12 -> 19;
+    provider_excluded_billing added 2026-06-08 by mig 101 -> 20;
+    state_excluded_provider_billing added 2026-06-09 by mig 105 -> 21;
+    opioid_prescribing_outlier added 2026-06-09 by mig 106 -> 22;
+    services_per_beneficiary_outlier added 2026-06-09 by mig 107 -> 23;
+    provider_excluded_billing_partb added 2026-06-09 by mig 109 -> 24;
+    name_resolved_excluded_provider_billing added 2026-06-09 by mig 110 -> 25;
+    excluded_provider_received_open_payments added 2026-06-09 by mig 111 ->
+    26). If the count changes again, EXPECTED_SIGNAL_TO_REFRESHER MUST be
+    updated alongside.
     """
     with master_db.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM derived.fraud_signal_config")
         (n,) = cur.fetchone()
-    assert n == 19, (
-        f"fraud_signal_config has {n} rows; expected 19. If you added a "
+    assert n == 26, (
+        f"fraud_signal_config has {n} rows; expected 26. If you added a "
         f"new signal, update EXPECTED_SIGNAL_TO_REFRESHER and re-run."
     )
 
@@ -319,7 +356,7 @@ def test_formula_version_registered(master_db: psycopg.Connection):
 def test_master_function_comment_documents_consolidation(
     master_db: psycopg.Connection,
 ):
-    """The function's pg_description must reflect the 18-signal scope."""
+    """The function's pg_description must reflect the 26-signal scope."""
     with master_db.cursor() as cur:
         cur.execute("""
             SELECT obj_description(
@@ -330,7 +367,7 @@ def test_master_function_comment_documents_consolidation(
         """)
         (comment,) = cur.fetchone()
     assert comment is not None, "function has no COMMENT ON"
-    assert "18" in comment, (
-        "function comment does not document the 18-signal scope: "
+    assert "26" in comment, (
+        "function comment does not document the 26-signal scope: "
         f"{comment!r}"
     )

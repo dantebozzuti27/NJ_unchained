@@ -115,13 +115,25 @@ def _insert_l1(
 # ============================================================================
 
 
-def test_all_18_known_signals_seeded(fraud_db: psycopg.Connection) -> None:
-    """The 18 signal_ids known at migration time must be seeded.
+def test_all_known_signals_seeded(fraud_db: psycopg.Connection) -> None:
+    """The full signal roster must be seeded with the expected
+    (signal_family, min_actionable_threshold) per signal.
 
     14 from migration 061 + 3 from migrations 064/065/066 (sam_bearing family:
     entity_excluded_via_sam_uei, donor_on_sam, candidate_funded_by_sam_excluded_donors)
     + 1 from migration 092 (entity_on_leie_strict_address: name+address strict
-    variant of entity_on_leie, leie_bearing family).
+    variant of entity_on_leie, leie_bearing family)
+    + 1 from migration 098 (nj_state_candidate_on_leie, leie_bearing)
+    + 1 from migration 101 (provider_excluded_billing, leie_bearing)
+    + 1 from migration 105 (state_excluded_provider_billing, state_exclusion)
+    + 1 from migration 106 (opioid_prescribing_outlier, cms_utilization)
+    + 1 from migration 107 (services_per_beneficiary_outlier, cms_utilization)
+    + 1 from migration 109 (provider_excluded_billing_partb, leie_bearing)
+    + 1 from migration 110 (name_resolved_excluded_provider_billing,
+      leie_bearing)
+    + 1 from migration 111 (excluded_provider_received_open_payments,
+      leie_bearing).
+    Twenty-six signals total.
     """
     expected = {
         "entity_on_leie": ("leie_bearing", Decimal("0.00")),
@@ -155,6 +167,42 @@ def test_all_18_known_signals_seeded(fraud_db: psycopg.Connection) -> None:
         # Migration 066: candidate-side projection of donor_on_sam.
         "candidate_funded_by_sam_excluded_donors":
             ("sam_bearing", Decimal("200.00")),
+        # Migration 098: NJ-state-roster x LEIE cross-source name match.
+        "nj_state_candidate_on_leie": ("leie_bearing", Decimal("0.00")),
+        # Migration 101: HHS-OIG-excluded provider x CMS Part D exact-NPI
+        # overlap. Binary indicator (raw_value = gross drug cost, but the
+        # actionable threshold is 0 -- every exclusion overlap is actionable).
+        "provider_excluded_billing": ("leie_bearing", Decimal("0.00")),
+        # Migration 109: HHS-OIG-excluded provider x CMS Part B exact-NPI
+        # overlap. Part-B companion to provider_excluded_billing; binary
+        # indicator (raw_value = Medicare paid amount, threshold 0).
+        "provider_excluded_billing_partb":
+            ("leie_bearing", Decimal("0.00")),
+        # Migration 110: name-only LEIE exclusion resolved via NPPES to a
+        # unique NPI that is billing CMS. Inferred-identity recall companion;
+        # leie_bearing evidentiary core, threshold 0.
+        "name_resolved_excluded_provider_billing":
+            ("leie_bearing", Decimal("0.00")),
+        # Migration 105: NJ-Medicaid-excluded provider x CMS billing
+        # exact-NPI overlap. Binary indicator (raw_value = combined
+        # Medicare exposure, threshold 0). New state_exclusion family.
+        "state_excluded_provider_billing":
+            ("state_exclusion", Decimal("0.00")),
+        # Migration 106: specialty-relative opioid-prescribing tail outlier.
+        # Distributional signal; actionable gate (tail + volume + bucket) is
+        # applied at refresh time, so config threshold is 0. New
+        # cms_utilization family.
+        "opioid_prescribing_outlier":
+            ("cms_utilization", Decimal("0.00")),
+        # Migration 107: specialty-relative Part B services-per-beneficiary
+        # overutilization tail outlier. Same cms_utilization family / gate.
+        "services_per_beneficiary_outlier":
+            ("cms_utilization", Decimal("0.00")),
+        # Migration 111: HHS-OIG-excluded provider x CMS Open Payments
+        # exact-NPI overlap. Conflict-of-interest lead (industry transfer of
+        # value, not a federal payment); leie_bearing family, threshold 0.
+        "excluded_provider_received_open_payments":
+            ("leie_bearing", Decimal("0.00")),
     }
 
     with fraud_db.cursor() as cur:

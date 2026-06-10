@@ -43,6 +43,7 @@ const VALID_KINDS: ReadonlySet<EntityKind> = new Set([
   "contractor",
   "address",
   "nj_state_candidate",
+  "provider",
 ]);
 
 export function isValidKind(k: string): k is EntityKind {
@@ -874,6 +875,45 @@ export async function getEntityHeader(opts: {
       office_state: "NJ",
       office_district: null,
       office_party: r.office_party == null ? null : String(r.office_party),
+      office_incumbent_status: null,
+    };
+  }
+
+  if (kind === "provider") {
+    // NPI-keyed healthcare provider (entity_id = the 10-digit NPI). The
+    // /risk URL space uses cycle = the CMS data_year::text (mig 100/101).
+    // Resolve the human-readable name + practice state from the CMS Part D
+    // prescriber substrate; display_name falls back to the NPI when the
+    // provider has no Part D row for that year. is_nj is derived from the
+    // prescriber's practice state, NOT a constant (a provider can be billing
+    // Medicare from anywhere), matching the L3 evidence view's CASE branch.
+    const rows = (await sql`
+      SELECT
+        ${cycle}::CHAR(4)                                      AS cycle,
+        npi                                                    AS entity_id,
+        NULLIF(TRIM(
+          COALESCE(prscrbr_first_name, '') || ' ' ||
+          COALESCE(prscrbr_last_org_name, '')
+        ), '')                                                 AS display_name,
+        (prscrbr_state_abrvtn = 'NJ')                          AS is_nj,
+        prscrbr_type                                           AS prscrbr_type
+      FROM raw.cms_partd_prescriber
+      WHERE npi = ${id}
+        AND data_year::text = ${cycle}
+      LIMIT 1
+    `) as Record<string, unknown>[];
+    if (rows.length === 0) return null;
+    const r = rows[0];
+    return {
+      cycle: String(r.cycle),
+      entity_kind: "provider",
+      entity_id: String(r.entity_id),
+      display_name: r.display_name == null ? null : String(r.display_name),
+      is_nj: r.is_nj === true,
+      office_code: r.prscrbr_type == null ? null : String(r.prscrbr_type),
+      office_state: r.is_nj === true ? "NJ" : null,
+      office_district: null,
+      office_party: null,
       office_incumbent_status: null,
     };
   }

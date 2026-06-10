@@ -3004,6 +3004,183 @@ def usaspending_active_window_non_empty(
 
 
 # ============================================================================
+# FRAUD-F7 healthcare substrates -- row_count_positive gates
+# ============================================================================
+#
+# One row_count_positive gate per CMS / NJ healthcare raw asset, mirroring
+# the LEIE / USAspending substrate gates above. A fresh install with zero
+# pulls fails the gate so the operator notices the missing substrate. The
+# CMS annual files are partitioned by year; a single row is sufficient
+# evidence that at least one vintage landed (per-year coverage is the
+# schedule's concern, not this gate's).
+# ============================================================================
+
+
+@asset_check(
+    asset=AssetKey(["raw", "cms_partd_prescriber"]),
+    name="row_count_positive",
+    description="raw.cms_partd_prescriber must have at least one row.",
+)
+def cms_partd_prescriber_row_count_positive(
+    context: AssetCheckExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> AssetCheckResult:
+    """Confirm raw.cms_partd_prescriber has at least one row."""
+    n = _count(pg, "SELECT COUNT(*) FROM raw.cms_partd_prescriber")
+    passed = n > 0
+    _emit(governance, dataset_id="raw.cms_partd_prescriber",
+          check_name="row_count_positive", passed=passed,
+          details={"row_count": n})
+    return AssetCheckResult(
+        passed=passed, severity=AssetCheckSeverity.ERROR,
+        metadata={"row_count": n},
+    )
+
+
+@asset_check(
+    asset=AssetKey(["raw", "cms_physician_provider"]),
+    name="row_count_positive",
+    description="raw.cms_physician_provider must have at least one row.",
+)
+def cms_physician_provider_row_count_positive(
+    context: AssetCheckExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> AssetCheckResult:
+    """Confirm raw.cms_physician_provider has at least one row."""
+    n = _count(pg, "SELECT COUNT(*) FROM raw.cms_physician_provider")
+    passed = n > 0
+    _emit(governance, dataset_id="raw.cms_physician_provider",
+          check_name="row_count_positive", passed=passed,
+          details={"row_count": n})
+    return AssetCheckResult(
+        passed=passed, severity=AssetCheckSeverity.ERROR,
+        metadata={"row_count": n},
+    )
+
+
+@asset_check(
+    asset=AssetKey(["raw", "cms_open_payments_general"]),
+    name="row_count_positive",
+    description="raw.cms_open_payments_general must have at least one row.",
+)
+def cms_open_payments_general_row_count_positive(
+    context: AssetCheckExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> AssetCheckResult:
+    """Confirm raw.cms_open_payments_general has at least one row."""
+    n = _count(pg, "SELECT COUNT(*) FROM raw.cms_open_payments_general")
+    passed = n > 0
+    _emit(governance, dataset_id="raw.cms_open_payments_general",
+          check_name="row_count_positive", passed=passed,
+          details={"row_count": n})
+    return AssetCheckResult(
+        passed=passed, severity=AssetCheckSeverity.ERROR,
+        metadata={"row_count": n},
+    )
+
+
+@asset_check(
+    asset=AssetKey(["raw", "nj_medicaid_exclusion"]),
+    name="row_count_positive",
+    description="raw.nj_medicaid_exclusion must have at least one row.",
+)
+def nj_medicaid_exclusion_row_count_positive(
+    context: AssetCheckExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> AssetCheckResult:
+    """Confirm raw.nj_medicaid_exclusion has at least one row."""
+    n = _count(pg, "SELECT COUNT(*) FROM raw.nj_medicaid_exclusion")
+    passed = n > 0
+    _emit(governance, dataset_id="raw.nj_medicaid_exclusion",
+          check_name="row_count_positive", passed=passed,
+          details={"row_count": n})
+    return AssetCheckResult(
+        passed=passed, severity=AssetCheckSeverity.ERROR,
+        metadata={"row_count": n},
+    )
+
+
+# ============================================================================
+# NPPES NPI Registry (FRAUD-F7 Phase-3 identity spine) raw-source gates
+# ============================================================================
+#
+# Two gates on the full-replace identity spine, mirroring the LEIE / CMS /
+# NJ-Medicaid substrate gates above:
+#   1. row_count_positive -- a fresh install with zero pulls fails so the
+#      operator notices the missing identity spine.
+#   2. all_npi_valid_shape -- the spine's whole value is that `npi` is the
+#      exact join key for resolving name-only LEIE / NJ-Medicaid exclusions.
+#      A malformed NPI (not exactly 10 digits) would silently fail to join,
+#      so we gate on the COUNT of rows whose npi violates the 10-digit shape
+#      being zero. This is belt-and-suspenders against the table CHECK
+#      (db/migrations/108_raw_nppes_provider.sql) -- if a future loader path
+#      ever bypasses it, this surfaces the drift at the orchestration layer.
+# ============================================================================
+
+
+@asset_check(
+    asset=AssetKey(["raw", "nppes_provider"]),
+    name="row_count_positive",
+    description="raw.nppes_provider must have at least one row.",
+)
+def nppes_provider_row_count_positive(
+    context: AssetCheckExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> AssetCheckResult:
+    """Confirm raw.nppes_provider has at least one row."""
+    n = _count(pg, "SELECT COUNT(*) FROM raw.nppes_provider")
+    passed = n > 0
+    _emit(governance, dataset_id="raw.nppes_provider",
+          check_name="row_count_positive", passed=passed,
+          details={"row_count": n})
+    return AssetCheckResult(
+        passed=passed, severity=AssetCheckSeverity.ERROR,
+        metadata={"row_count": n},
+    )
+
+
+@asset_check(
+    asset=AssetKey(["raw", "nppes_provider"]),
+    name="all_npi_valid_shape",
+    description=(
+        "Every raw.nppes_provider.npi must be exactly 10 digits -- the "
+        "exact join key for name-only LEIE / NJ-Medicaid exclusion "
+        "resolution."
+    ),
+)
+def nppes_provider_all_npi_valid_shape(
+    context: AssetCheckExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> AssetCheckResult:
+    """Confirm no raw.nppes_provider.npi violates the 10-digit shape.
+
+    NPI shape rule: a National Provider Identifier is exactly 10 digits.
+    Source: CMS NPPES / NPI Standard (45 CFR 162.406). The raw table CHECK
+    already enforces this at load; this gate re-asserts it at the
+    orchestration layer so a future loader bypass cannot silently land a
+    join-breaking identifier.
+    """
+    n_invalid = _count(
+        pg,
+        "SELECT COUNT(*) FROM raw.nppes_provider WHERE npi !~ '^[0-9]{10}$'",
+    )
+    passed = n_invalid == 0
+    _emit(governance, dataset_id="raw.nppes_provider",
+          check_name="all_npi_valid_shape", passed=passed,
+          details={"invalid_npi_count": n_invalid})
+    return AssetCheckResult(
+        passed=passed, severity=AssetCheckSeverity.ERROR,
+        metadata={"invalid_npi_count": n_invalid},
+    )
+
+
+# ============================================================================
 # MIGRATION 097: per-signal observation-distribution drift detector
 # ============================================================================
 #
@@ -3207,6 +3384,13 @@ ALL_ASSET_CHECKS = [
     usaspending_row_count_positive,
     usaspending_pop_state_nj_invariant,
     usaspending_active_window_non_empty,
+    # FRAUD-F7 CMS / NJ healthcare substrates
+    cms_partd_prescriber_row_count_positive,
+    cms_physician_provider_row_count_positive,
+    cms_open_payments_general_row_count_positive,
+    nj_medicaid_exclusion_row_count_positive,
+    nppes_provider_row_count_positive,
+    nppes_provider_all_npi_valid_shape,
     # Tier 4 v3 fraud-risk surface
     fraud_signal_observation_row_count_positive,
     fraud_signal_observation_signal_coverage,

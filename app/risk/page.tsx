@@ -32,6 +32,7 @@ const KIND_LABELS: Record<EntityKind, string> = {
   contractor: "Contractor",
   address: "Address cluster",
   nj_state_candidate: "NJ state candidate",
+  provider: "Healthcare provider",
 };
 
 const PARTY_LABELS: Record<string, { fg: string; bg: string }> = {

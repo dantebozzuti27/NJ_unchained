@@ -52,6 +52,7 @@ import logging
 from pathlib import Path
 from typing import Any, Final
 
+import httpx
 from dagster import (
     AssetDep,
     AssetExecutionContext,
@@ -69,12 +70,17 @@ from ingestion import (
     census_acs_housing,
     census_acs_income,
     census_acs_pums,
+    cms_medicare,
+    cms_open_payments,
+    cms_physician,
     dol_oflc_lca,
     fec,
     fhfa_hpi,
     fred_mortgage_rates,
     hhs_oig_leie,
     nj_dca_property_tax,
+    nj_medicaid_exclusion,
+    nppes,
     usaspending,
     zillow_zhvi,
 )
@@ -153,6 +159,41 @@ PUMS_FRESHNESS = FreshnessPolicy.time_window(
 FEC_FRESHNESS = FreshnessPolicy.time_window(
     fail_window=dt.timedelta(days=21),  warn_window=dt.timedelta(days=16),
 )
+# CMS annual provider/payment files (FRAUD-F7 healthcare substrates) publish
+# ONCE per data/program year, ~1.5-2 years after the data year (claims must
+# mature and be adjudicated), with the publication day drifting inside a
+# mid-year window. See db/seeds/042_release_calendar_cms_partd.sql
+# (cadence='annual', expected_lag_hours=1440 == 60 days of publication drift).
+# Because each year is a new partition the platform re-pulls only the most-
+# recently-published vintage, so the materialization-age budget is annual:
+# a 420/380-day envelope mirrors the ACS / PUMS annual sources and lights up
+# only if a full publication cycle is missed.
+CMS_ANNUAL_FRESHNESS = FreshnessPolicy.time_window(
+    fail_window=dt.timedelta(days=420), warn_window=dt.timedelta(days=380),
+)
+# NJ Medicaid / OSC exclusion list: OpenSanctions re-derives the simplified
+# CSV from the authoritative NJ OSC debarment PDF on a ~daily cadence
+# (db/migrations/104_raw_nj_medicaid_exclusion.sql). A snapshot UPSERT like
+# LEIE, but a far tighter cadence than LEIE's monthly full-replace, so the
+# budget is tight: a 14-day fail / 10-day warn window absorbs weekend / CDN
+# publication slips while flagging a stalled feed within ~10 days.
+NJ_MED_EXCLUSION_FRESHNESS = FreshnessPolicy.time_window(
+    fail_window=dt.timedelta(days=14), warn_window=dt.timedelta(days=10),
+)
+# NPPES NPI Registry (FRAUD-F7 Phase-3 identity spine): CMS publishes the
+# full-replace monthly dissemination ZIP in the second week of each month
+# (download.cms.gov/nppes/NPI_Files.html; weekly incrementals exist between
+# monthly releases but the ingester pulls the monthly V.2 full file). Like
+# LEIE, this is a monthly full-replace snapshot fetched via a conditional-GET
+# (cheap HEAD probe + cache-hit when the file is unchanged), so the
+# materialization age stays recent even on no-change ticks. We therefore
+# mirror LEIE's monthly budget: a 25-day fail / 20-day warn window absorbs a
+# normal month boundary plus CMS's typical few-day second-week publication
+# slip without spurious alarms, and flags a stalled monthly feed within
+# ~25 days. See db/seeds/046_release_calendar_nppes.sql (cadence='monthly').
+NPPES_FRESHNESS = FreshnessPolicy.time_window(
+    fail_window=dt.timedelta(days=25), warn_window=dt.timedelta(days=20),
+)
 
 
 # ============================================================================
@@ -172,6 +213,16 @@ DCA_BACKFILL_YEARS: Final[int] = 3       # NJ DCA publishes annually in January
 # rely on idempotent DELETE+COPY so re-runs are safe. Older vintages
 # do not change once published.
 PUMS_BACKFILL_YEARS: Final[int] = 1
+
+# CMS annual provider/payment files lag ~1.5-2 years behind the data year and
+# the publication day drifts within a mid-year window (db/seeds/042). We walk
+# a trailing window backwards from "now" and load the MOST-RECENTLY-PUBLISHED
+# year only (stop after the first year that resolves + loads), because each
+# file is hundreds of MB and old years are never revised in place -- exactly
+# the PUMS "heaviest asset, refresh the newest vintage" tradeoff. A 4-year
+# window comfortably spans the publication lag so the freshest available
+# vintage is always reachable.
+CMS_ANNUAL_BACKFILL_YEARS: Final[int] = 4
 
 
 # ============================================================================
@@ -1847,6 +1898,482 @@ def raw_usaspending_award(
 
 
 # ============================================================================
+# RAW ASSET: CMS Medicare Part D prescriber (FRAUD-F7 substrate)
+# ============================================================================
+#
+# Annual, one full-replace CSV per calendar year resolved from the CMS DKAN
+# catalog (data.cms.gov/data.json). Files are hundreds of MB and old years
+# are never revised, so -- like PUMS -- the schedule materializes only the
+# most-recently-published vintage: we walk a trailing window backwards from
+# "now" and stop at the first year that resolves in the catalog and loads.
+# A year that is not (yet) in the catalog raises IngestError at the resolve
+# step and is logged as "not published", NOT recorded as a failure. Operators
+# backfilling older years run `nj-ingest-cms-medicare fetch-and-load
+# --year YYYY` directly. Per-year load is DELETE-by-data_year + COPY, so a
+# re-run of the same year is idempotent.
+# ============================================================================
+
+
+@asset(
+    key=AssetKey(["raw", "cms_partd_prescriber"]),
+    description=(
+        "CMS Medicare Part D Prescribers - by Provider: one NPI-level "
+        "summary row per prescriber per calendar year (total claims, drug "
+        "cost, beneficiaries, opioid metrics). Resolved per data_year from "
+        "the data.cms.gov DKAN catalog and loaded DELETE-by-data_year + "
+        "COPY (idempotent per year). Suppressed/blank cells are SQL NULL, "
+        "never 0; NPI is kept as a 10-char string. Substrate-only -- the "
+        "NPI x LEIE / Open Payments cross-source signals are a separate "
+        "downstream layer."
+    ),
+    group_name="fec",
+    freshness_policy=CMS_ANNUAL_FRESHNESS,
+    compute_kind="python",
+)
+def raw_cms_partd_prescriber(
+    context: AssetExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> MaterializeResult:
+    """Fetch + load the most-recently-published Part D Prescriber vintage.
+
+    Walks ``CMS_ANNUAL_BACKFILL_YEARS`` backwards from the current year and
+    loads the first year whose CSV resolves in the CMS catalog. Years not
+    yet published resolve to an ``IngestError`` and are skipped (info-level,
+    not a failure). Operators backfilling older years should run
+    ``nj-ingest-cms-medicare fetch-and-load --year YYYY`` directly.
+    """
+    out_dir = Path("data/cache/cms_partd_prescriber")
+    today = dt.date.today()
+    candidate_years = range(today.year, today.year - CMS_ANNUAL_BACKFILL_YEARS, -1)
+
+    failures: list[dict[str, object]] = []
+    for year in candidate_years:
+        try:
+            resolved_url = cms_medicare.resolve_download_url(data_year=year)
+        except IngestError:
+            context.log.info("CMS Part D CY%d: not in catalog yet, skipping", year)
+            continue
+
+        try:
+            fetch = cms_medicare.fetch_partd_csv(
+                data_year=year, dest_dir=out_dir, overwrite=False, url=resolved_url,
+            )
+            parse = cms_medicare.parse_partd_csv(fetch, data_year=year)
+            with pg.connect() as conn:
+                n = cms_medicare.load_to_postgres(parse, conn)
+                conn.commit()
+        except Exception as exc:
+            context.log.warning("CMS Part D CY%d: fetch/load failed: %s", year, exc)
+            failures.append({"year": year, "error": str(exc)})
+            continue
+
+        context.log.info(
+            "CMS Part D CY%d: loaded %d rows (cache_hit=%s, sha256=%s...)",
+            year, n, fetch.cache_hit, fetch.source_sha256[:12],
+        )
+        _emit_materialized(
+            governance, dataset_id="raw.cms_partd_prescriber",
+            rows_upserted=n,
+            extra={
+                "data_year":      year,
+                "source_url":     fetch.source_url,
+                "source_vintage": fetch.source_vintage,
+                "source_sha256":  fetch.source_sha256,
+                "cache_hit":      fetch.cache_hit,
+                "n_bytes":        fetch.n_bytes,
+            },
+        )
+        return MaterializeResult(metadata={
+            "rows_upserted":  MetadataValue.int(n),
+            "data_year":      MetadataValue.int(year),
+            "source_vintage": MetadataValue.text(fetch.source_vintage),
+            "source_sha256":  MetadataValue.text(fetch.source_sha256),
+            "cache_hit":      MetadataValue.bool(fetch.cache_hit),
+            "n_bytes":        MetadataValue.int(fetch.n_bytes),
+        })
+
+    raise RuntimeError(
+        f"CMS Part D Prescriber: no vintage resolved+loaded across "
+        f"{list(candidate_years)}; failures={failures}",
+    )
+
+
+# ============================================================================
+# RAW ASSET: CMS Physician & Other Practitioners by Provider (FRAUD-F7)
+# ============================================================================
+#
+# Annual, one full-replace CSV per calendar year resolved from the CMS DKAN
+# catalog. Identical lifecycle to the Part D prescriber asset above: refresh
+# the most-recently-published vintage, skip not-yet-published years at the
+# catalog-resolve step, DELETE-by-data_year + COPY for idempotency.
+# ============================================================================
+
+
+@asset(
+    key=AssetKey(["raw", "cms_physician_provider"]),
+    description=(
+        "CMS Medicare Physician & Other Practitioners - by Provider: one "
+        "NPI-level summary row per rendering provider per calendar year "
+        "(total beneficiaries, services, allowed/payment/submitted amounts, "
+        "average risk score). Resolved per data_year from the data.cms.gov "
+        "DKAN catalog (matched with == against the sibling '... and Service' "
+        "dataset) and loaded DELETE-by-data_year + COPY. Blank numeric cells "
+        "are SQL NULL, never 0; NPI is validated as a 10-digit string. "
+        "Substrate-only -- the active-biller roster for downstream "
+        "LEIE / NJ-exclusion cross-source signals."
+    ),
+    group_name="fec",
+    freshness_policy=CMS_ANNUAL_FRESHNESS,
+    compute_kind="python",
+)
+def raw_cms_physician_provider(
+    context: AssetExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> MaterializeResult:
+    """Fetch + load the most-recently-published by-Provider vintage.
+
+    Walks ``CMS_ANNUAL_BACKFILL_YEARS`` backwards from the current year and
+    loads the first year whose CSV resolves in the CMS catalog. Years not
+    yet published resolve to an ``IngestError`` and are skipped. Operators
+    backfilling older years run ``nj-ingest-cms-physician fetch-and-load
+    --data-year YYYY`` directly.
+    """
+    out_dir = Path("data/cache/cms_physician_provider")
+    today = dt.date.today()
+    candidate_years = range(today.year, today.year - CMS_ANNUAL_BACKFILL_YEARS, -1)
+
+    failures: list[dict[str, object]] = []
+    for year in candidate_years:
+        try:
+            resolved_url = cms_physician.resolve_download_url(data_year=year)
+        except IngestError:
+            context.log.info("CMS Physician CY%d: not in catalog yet, skipping", year)
+            continue
+
+        try:
+            fetch = cms_physician.fetch_cms_provider_csv(
+                data_year=year, dest_dir=out_dir, overwrite=False, url=resolved_url,
+            )
+            parse = cms_physician.parse_cms_provider_csv(fetch)
+            with pg.connect() as conn:
+                n = cms_physician.load_to_postgres(parse, conn)
+                conn.commit()
+        except Exception as exc:
+            context.log.warning("CMS Physician CY%d: fetch/load failed: %s", year, exc)
+            failures.append({"year": year, "error": str(exc)})
+            continue
+
+        context.log.info(
+            "CMS Physician CY%d: loaded %d rows (cache_hit=%s, sha256=%s...)",
+            year, n, fetch.cache_hit, fetch.source_sha256[:12],
+        )
+        _emit_materialized(
+            governance, dataset_id="raw.cms_physician_provider",
+            rows_upserted=n,
+            extra={
+                "data_year":      year,
+                "source_url":     fetch.source_url,
+                "source_vintage": fetch.source_vintage,
+                "source_sha256":  fetch.source_sha256,
+                "cache_hit":      fetch.cache_hit,
+                "n_bytes":        fetch.n_bytes,
+            },
+        )
+        return MaterializeResult(metadata={
+            "rows_upserted":  MetadataValue.int(n),
+            "data_year":      MetadataValue.int(year),
+            "source_vintage": MetadataValue.text(fetch.source_vintage),
+            "source_sha256":  MetadataValue.text(fetch.source_sha256),
+            "cache_hit":      MetadataValue.bool(fetch.cache_hit),
+            "n_bytes":        MetadataValue.int(fetch.n_bytes),
+        })
+
+    raise RuntimeError(
+        f"CMS Physician by-Provider: no vintage resolved+loaded across "
+        f"{list(candidate_years)}; failures={failures}",
+    )
+
+
+# ============================================================================
+# RAW ASSET: CMS Open Payments general payments (FRAUD-F7 substrate)
+# ============================================================================
+#
+# Annual, one ~900 MB ZIP per program year. The download filename carries a
+# publication+extract date that changes on every CMS refresh and is NOT
+# derivable, so the ingester pins verified per-year URLs and a templated
+# best-effort guess for un-pinned years (which 404). The asset walks a
+# trailing window of program years and loads the most recent one whose ZIP
+# downloads; an un-pinned year's templated URL 404s (httpx.HTTPStatusError)
+# and is skipped. The NJ-default ``state_filter`` bounds the national file
+# to the NJ slice (low tens of thousands of rows) -- the platform is
+# NJ-focused. Load is DELETE-by-program_year + INSERT (idempotent per year).
+# ============================================================================
+
+
+@asset(
+    key=AssetKey(["raw", "cms_open_payments_general"]),
+    description=(
+        "CMS Open Payments General Payments (NJ recipients): one row per "
+        "manufacturer/GPO payment or transfer-of-value to an NJ covered "
+        "recipient per program year (payer, amount, date, nature, product, "
+        "recipient NPI). Pulled per program_year from download.cms.gov, "
+        "filtered to Recipient_State='NJ' (the national file is ~900 MB), "
+        "and loaded DELETE-by-program_year + INSERT DISTINCT ON (record_id). "
+        "Blank payment amounts are SQL NULL, never 0. Substrate for the "
+        "future NPI x Part D kickback-correlation signal."
+    ),
+    group_name="fec",
+    freshness_policy=CMS_ANNUAL_FRESHNESS,
+    compute_kind="python",
+)
+def raw_cms_open_payments_general(
+    context: AssetExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> MaterializeResult:
+    """Fetch + load the most-recently-published NJ Open Payments program year.
+
+    Walks ``CMS_ANNUAL_BACKFILL_YEARS`` backwards from the current year and
+    loads the first program year whose ZIP downloads. Un-pinned years return
+    a templated URL that 404s (``httpx.HTTPStatusError``) and are skipped.
+    Operators loading an un-pinned year run ``nj-ingest-cms-open-payments
+    fetch-and-load --program-year YYYY --url <exact CMS url>`` directly.
+    """
+    out_dir = Path("data/cache/cms_open_payments")
+    today = dt.date.today()
+    candidate_years = range(today.year, today.year - CMS_ANNUAL_BACKFILL_YEARS, -1)
+
+    failures: list[dict[str, object]] = []
+    for year in candidate_years:
+        try:
+            fetch = cms_open_payments.fetch_general_payments_zip(
+                year, dest_dir=out_dir, overwrite=False,
+            )
+        except (httpx.HTTPStatusError, IngestError) as exc:
+            context.log.info(
+                "CMS Open Payments PY%d: not available (%s), skipping", year, exc,
+            )
+            continue
+
+        try:
+            parse = cms_open_payments.parse_general_payments(
+                fetch,
+                state_filter=cms_open_payments.DEFAULT_STATE_FILTER,
+                expected_program_year=year,
+            )
+            with pg.connect() as conn:
+                n = cms_open_payments.load_to_postgres(parse, conn)
+                conn.commit()
+        except Exception as exc:
+            context.log.warning(
+                "CMS Open Payments PY%d: parse/load failed: %s", year, exc,
+            )
+            failures.append({"year": year, "error": str(exc)})
+            continue
+
+        context.log.info(
+            "CMS Open Payments PY%d: loaded %d NJ rows (cache_hit=%s, sha256=%s...)",
+            year, n, fetch.cache_hit, fetch.source_sha256[:12],
+        )
+        _emit_materialized(
+            governance, dataset_id="raw.cms_open_payments_general",
+            rows_upserted=n,
+            extra={
+                "program_year":   year,
+                "state_filter":   parse.state_filter,
+                "source_url":     fetch.source_url,
+                "source_vintage": fetch.source_vintage,
+                "source_sha256":  fetch.source_sha256,
+                "cache_hit":      fetch.cache_hit,
+                "n_bytes":        fetch.n_bytes,
+            },
+        )
+        return MaterializeResult(metadata={
+            "rows_upserted":  MetadataValue.int(n),
+            "program_year":   MetadataValue.int(year),
+            "state_filter":   MetadataValue.text(parse.state_filter or "ALL"),
+            "source_vintage": MetadataValue.text(fetch.source_vintage),
+            "source_sha256":  MetadataValue.text(fetch.source_sha256),
+            "cache_hit":      MetadataValue.bool(fetch.cache_hit),
+            "n_bytes":        MetadataValue.int(fetch.n_bytes),
+        })
+
+    raise RuntimeError(
+        f"CMS Open Payments: no program year downloaded+loaded across "
+        f"{list(candidate_years)}; failures={failures}. Un-pinned years "
+        "need an explicit --url (the dated filename is not derivable).",
+    )
+
+
+# ============================================================================
+# RAW ASSET: NJ Medicaid / OSC exclusion list (FRAUD-F7 substrate)
+# ============================================================================
+#
+# Snapshot UPSERT, modeled on the LEIE asset above (FRAUD-F5). NJ is the
+# state-level analog to the federal HHS-OIG LEIE: a conditional-GET pull of
+# a small daily CSV, then an UPSERT-by-record_hash that bumps last_seen_at
+# so silent reinstatements/removals are recoverable via
+# derived.v_nj_medicaid_exclusion_active. No year parameter -- the source is
+# a single mutable list, exactly like LEIE.
+# ============================================================================
+
+
+@asset(
+    key=AssetKey(["raw", "nj_medicaid_exclusion"]),
+    description=(
+        "NJ Medicaid / OSC debarment exclusion list (state analog to the "
+        "federal HHS-OIG LEIE). Pulled via conditional-GET from the keyless "
+        "OpenSanctions us_nj_med_exclusions daily CSV (re-derived from the "
+        "NJ OSC debarment PDF). UPSERT-by-record_hash with a last_seen_at "
+        "tripwire; reinstatements/removals are detected via last_seen_at "
+        "falling behind the most recent pull (see "
+        "derived.v_nj_medicaid_exclusion_active). NPI coverage is "
+        "non-exhaustive upstream (blank is common). Substrate-only -- the "
+        "NJ-excluded-provider-still-billing-Medicare signal is downstream."
+    ),
+    group_name="fec",
+    freshness_policy=NJ_MED_EXCLUSION_FRESHNESS,
+    compute_kind="python",
+)
+def raw_nj_medicaid_exclusion(
+    context: AssetExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> MaterializeResult:
+    """Fetch targets.simple.csv (conditional GET) and UPSERT into raw.
+
+    Mirrors the LEIE asset: a no-change pull is a cheap HEAD probe + a
+    no-op last_seen_at bump; a real refresh streams the small CSV through
+    a COPY-then-UPSERT. The source vintage stamped on every row is the
+    fetch's ETag / Last-Modified (or 'local' for an operator-supplied
+    file); the loader reads it from ``parse.source_vintage``.
+    """
+    out_dir = Path("data/cache/nj_medicaid_exclusion")
+
+    fetch = nj_medicaid_exclusion.fetch_nj_med_exclusions(
+        dest_dir=out_dir, overwrite=False,
+    )
+    parse = nj_medicaid_exclusion.parse_nj_med_csv(fetch)
+    context.log.info(
+        "NJ Medicaid exclusion: parsed %d rows (cache_hit=%s, sha256=%s...)",
+        parse.n_rows, fetch.cache_hit, fetch.source_sha256[:12],
+    )
+
+    with pg.connect() as conn:
+        n = nj_medicaid_exclusion.load_to_postgres(parse, conn)
+        conn.commit()
+
+    _emit_materialized(
+        governance, dataset_id="raw.nj_medicaid_exclusion",
+        rows_upserted=n,
+        extra={
+            "source_url":     fetch.source_url,
+            "source_vintage": fetch.source_vintage,
+            "source_sha256":  fetch.source_sha256,
+            "cache_hit":      fetch.cache_hit,
+            "n_bytes":        fetch.n_bytes,
+        },
+    )
+    return MaterializeResult(metadata={
+        "rows_upserted":  MetadataValue.int(n),
+        "source_vintage": MetadataValue.text(fetch.source_vintage),
+        "source_sha256":  MetadataValue.text(fetch.source_sha256),
+        "cache_hit":      MetadataValue.bool(fetch.cache_hit),
+        "n_bytes":        MetadataValue.int(fetch.n_bytes),
+    })
+
+
+# ============================================================================
+# RAW ASSET: NPPES NPI Registry (FRAUD-F7 Phase-3 identity spine)
+# ============================================================================
+#
+# Full-replace snapshot, modeled on the NJ Medicaid exclusion asset above
+# (and ultimately LEIE): NPPES publishes no delta/tombstone stream, so the
+# monthly bulk file IS the truth. fetch -> parse -> load is TRUNCATE+COPY
+# with NO year parameter (one row per NPI; the latest snapshot only),
+# exactly like raw.nj_medicaid_exclusion. The national npidata file is
+# ~10 GB / ~8M rows; the parse is NJ-filtered by default
+# (nppes.DEFAULT_STATE_FILTER) so this normally lands only NJ practice-
+# location providers. This is the IDENTITY SPINE for resolving name-only
+# LEIE / NJ-Medicaid exclusions to a concrete NPI + NJ practice location;
+# it is a substrate, not itself a signal source.
+# ============================================================================
+
+
+@asset(
+    key=AssetKey(["raw", "nppes_provider"]),
+    description=(
+        "NPPES NPI Registry (FRAUD-F7 Phase-3 identity spine): one row per "
+        "10-digit NPI mapping a provider to legal name, business practice "
+        "address, and primary taxonomy. Pulled via conditional-GET from the "
+        "CMS monthly full-dissemination ZIP (download.cms.gov/nppes), "
+        "NJ-filtered by default (the national file is ~10 GB / ~8M rows), "
+        "and loaded full-replace (TRUNCATE + COPY) -- NPPES has no delta "
+        "stream, so the monthly file is the complete truth. Blank cells load "
+        "as SQL NULL. Substrate-only: the join target that lets a name-only "
+        "LEIE / NJ-Medicaid exclusion resolve to a concrete NPI + NJ "
+        "practice location (see derived.v_nppes_provider_active)."
+    ),
+    group_name="fec",
+    freshness_policy=NPPES_FRESHNESS,
+    compute_kind="python",
+)
+def raw_nppes_provider(
+    context: AssetExecutionContext,
+    pg: PgResource,
+    governance: GovernanceWriter,
+) -> MaterializeResult:
+    """Fetch the monthly NPPES ZIP (conditional GET) and full-replace-load it.
+
+    Mirrors the NJ Medicaid exclusion asset: a no-change tick is a cheap
+    HEAD probe + cache-hit that still re-materializes the snapshot; a real
+    refresh streams the ZIP, stream-extracts the npidata CSV, NJ-filters the
+    projected rows, then TRUNCATE+COPYs them. The source vintage stamped on
+    every row is the YYYYMMDD-YYYYMMDD dissemination window CMS encodes in
+    the npidata member's filename (read from ``fetch.source_vintage``).
+    """
+    out_dir = Path("data/cache/nppes")
+
+    fetch = nppes.fetch_nppes_bulk(dest_dir=out_dir, overwrite=False)
+    parse = nppes.parse_nppes_csv(
+        fetch, state_filter=nppes.DEFAULT_STATE_FILTER,
+    )
+    context.log.info(
+        "NPPES provider: parsed %d rows (state_filter=%s, cache_hit=%s, "
+        "sha256=%s...)",
+        parse.n_rows, parse.state_filter, fetch.cache_hit,
+        fetch.source_sha256[:12],
+    )
+
+    with pg.connect() as conn:
+        n = nppes.load_to_postgres(parse, conn)
+        conn.commit()
+
+    _emit_materialized(
+        governance, dataset_id="raw.nppes_provider",
+        rows_upserted=n,
+        extra={
+            "state_filter":   parse.state_filter,
+            "source_url":     fetch.source_url,
+            "source_vintage": fetch.source_vintage,
+            "source_sha256":  fetch.source_sha256,
+            "cache_hit":      fetch.cache_hit,
+            "n_bytes":        fetch.n_bytes,
+        },
+    )
+    return MaterializeResult(metadata={
+        "rows_upserted":  MetadataValue.int(n),
+        "state_filter":   MetadataValue.text(parse.state_filter or "ALL"),
+        "source_vintage": MetadataValue.text(fetch.source_vintage),
+        "source_sha256":  MetadataValue.text(fetch.source_sha256),
+        "cache_hit":      MetadataValue.bool(fetch.cache_hit),
+        "n_bytes":        MetadataValue.int(fetch.n_bytes),
+    })
+
+
+# ============================================================================
 # DERIVED FRAUD-RISK ASSETS (Tier 4 v3: L1 + L3a)
 # ============================================================================
 #
@@ -3169,6 +3696,13 @@ ALL_ASSETS = [
     raw_hhs_oig_leie,
     # raw -- USAspending federal awards (Tier 4 v3 / FRAUD-F1 substrate)
     raw_usaspending_award,
+    # raw -- CMS / NJ healthcare substrates (FRAUD-F7)
+    raw_cms_partd_prescriber,
+    raw_cms_physician_provider,
+    raw_cms_open_payments_general,
+    raw_nj_medicaid_exclusion,
+    # raw -- NPPES NPI Registry (FRAUD-F7 Phase-3 identity spine)
+    raw_nppes_provider,
     # derived
     derived_fred_annual,
     derived_f_acs_mhi_real,

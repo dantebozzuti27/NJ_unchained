@@ -76,10 +76,21 @@ if TYPE_CHECKING:
 
 
 def test_valid_entity_kinds_match_l1_check_constraint() -> None:
-    """KEEP IN SYNC with derived.fraud_signal_observation's CHECK clause
-    (migration 050). If the SQL domain expands, this test must update."""
+    """No-DB sanity check on the serving-layer mirror of the L1 domain.
+
+    The authoritative source of truth is the
+    ``fraud_signal_observation_entity_kind_check`` CHECK constraint;
+    ``test_valid_entity_kinds_match_db_check_constraint`` (live_pg) asserts
+    parity against it so this constant cannot drift vacuously. This
+    no-DB test pins the *expected* members so a refactor that mutates the
+    constant in code is caught even without a database.
+
+    Nine kinds as of migration 101: the five FEC-domain kinds (050) plus
+    contractor (058), donor (059), nj_state_candidate (098), and provider
+    (101 -- NPI-keyed; LEIE x CMS Part D overlap)."""
     expected = frozenset({
         "committee", "candidate", "treasurer", "address", "donor_cluster",
+        "contractor", "donor", "nj_state_candidate", "provider",
     })
     assert expected == VALID_ENTITY_KINDS
 
@@ -420,6 +431,64 @@ def serving_client(
 
     from serving.app import create_app
     return TestClient(create_app())
+
+
+# --------------------------------------------------------------------------
+# L1 domain parity -- the constant cannot drift from the DB constraint
+# --------------------------------------------------------------------------
+
+
+def test_valid_entity_kinds_match_db_check_constraint(
+    fec_db: psycopg.Connection,
+) -> None:
+    """VALID_ENTITY_KINDS must equal the live CHECK constraint domain.
+
+    This is the anti-drift guard. The CHECK constraint on
+    ``derived.fraud_signal_observation.entity_kind`` is the single source
+    of truth; the serving-layer ``VALID_ENTITY_KINDS`` frozenset is only a
+    mirror used to 400 unknown kinds before hitting Postgres. We read the
+    constraint definition straight from the catalog
+    (``pg_get_constraintdef``) and parse the quoted string literals, so a
+    future migration that widens the domain forces this constant to be
+    updated -- it fails here instead of silently accepting (or rejecting)
+    a kind the database has changed its mind about.
+
+    The parse is form-agnostic: it works for both the ``IN (...)`` form
+    (migs 058/059) and the ``= ANY (ARRAY[...])`` form (mig 098), because
+    both spell the domain as single-quoted string literals.
+    """
+    import re
+
+    with fec_db.cursor() as cur:
+        cur.execute(
+            "SELECT pg_get_constraintdef(c.oid) "
+            "FROM pg_constraint c "
+            "WHERE c.conname = %s "
+            "  AND c.conrelid = 'derived.fraud_signal_observation'::regclass",
+            ["fraud_signal_observation_entity_kind_check"],
+        )
+        row = cur.fetchone()
+
+    assert row is not None, (
+        "fraud_signal_observation_entity_kind_check constraint not found; "
+        "did migration 050 (or a renamer) change the constraint name?"
+    )
+    constraint_def = row[0]
+
+    # Every allowed value appears as a single-quoted SQL string literal.
+    # `::text` casts live outside the quotes, so this captures only the
+    # domain members regardless of IN vs = ANY(ARRAY[...]) spelling.
+    db_kinds = frozenset(re.findall(r"'([^']+)'", constraint_def))
+
+    assert db_kinds == VALID_ENTITY_KINDS, (
+        "VALID_ENTITY_KINDS has drifted from the L1 CHECK constraint.\n"
+        f"  DB constraint domain : {sorted(db_kinds)}\n"
+        f"  serving constant     : {sorted(VALID_ENTITY_KINDS)}\n"
+        f"  in DB not in const   : {sorted(db_kinds - VALID_ENTITY_KINDS)}\n"
+        f"  in const not in DB   : {sorted(VALID_ENTITY_KINDS - db_kinds)}\n"
+        "Update serving.queries_fec_risk.VALID_ENTITY_KINDS to match the "
+        "constraint (and cite the widening migration)."
+    )
 
 
 # --------------------------------------------------------------------------

@@ -61,19 +61,37 @@ log = logging.getLogger(__name__)
 
 
 # ============================================================================
-# Constants -- mirror migration 050's CHECK constraint and migration 052's
-# scoring formula. Keep this file in sync with both.
+# Constants -- mirror the L1 CHECK constraint and migration 052's scoring
+# formula. Keep this file in sync with both.
 # ============================================================================
 
-#: L1 ``entity_kind`` domain (mirrors ``derived.fraud_signal_observation``'s
-#: CHECK constraint in migration 050). Order is intentional: matches the
-#: order entities are typically presented to analysts (most-actionable first).
+#: L1 ``entity_kind`` domain. This MUST stay identical to the
+#: ``fraud_signal_observation_entity_kind_check`` CHECK constraint on
+#: ``derived.fraud_signal_observation``. That constraint is the single
+#: source of truth; this frozenset is a serving-layer mirror so the API
+#: can reject unknown kinds with a 400 before touching Postgres.
+#:
+#: The domain has been widened five times; cite each migration so the
+#: lineage is auditable:
+#:   * mig 050 -- committee, candidate, treasurer, address, donor_cluster
+#:   * mig 058 -- + contractor   (federal-award recipient on LEIE)
+#:   * mig 059 -- + donor        (individual donor on LEIE)
+#:   * mig 098 -- + nj_state_candidate (NJ-state roster on LEIE)
+#:   * mig 101 -- + provider     (NPI-keyed; LEIE x CMS Part D overlap)
+#:
+#: ``test_serving_fec_risk.py`` asserts (against a live DB) that this set
+#: equals the parsed CHECK constraint domain, so any future widening that
+#: forgets to update this constant fails CI instead of drifting silently.
 VALID_ENTITY_KINDS: Final[frozenset[str]] = frozenset({
     "committee",
     "candidate",
     "treasurer",
     "address",
     "donor_cluster",
+    "contractor",
+    "donor",
+    "nj_state_candidate",
+    "provider",
 })
 
 #: Whitelisted sort columns for the queue endpoint. ``risk_score`` is the

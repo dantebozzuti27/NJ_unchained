@@ -14,7 +14,8 @@ export type EntityKind =
   | "donor_cluster"
   | "contractor"
   | "address"
-  | "nj_state_candidate";
+  | "nj_state_candidate"
+  | "provider";
 
 export interface RiskRow {
   cycle: string;
