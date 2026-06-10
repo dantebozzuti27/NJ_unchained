@@ -139,6 +139,12 @@ _NUMERIC_RE: Final[str] = r"^-?[0-9]+(\.[0-9]+)?$"
 # years used a different layout; we refuse to construct a request for them.
 CMS_EARLIEST_YEAR: Final[int] = 2013
 
+# Default state filter. The national provider file overruns a 512 MB
+# free-tier Neon project, so the platform loads NJ by default (consistent
+# with the Open Payments / NPPES ingesters). --national opts back into the
+# full file for a paid/self-hosted deployment.
+DEFAULT_STATE_FILTER: Final[str] = "NJ"
+
 # httpx timeouts. The catalog + HEAD probes stay short so a Dagster tick
 # does not stall on a network blip; the streaming GET gets a generous
 # window because the provider CSV is hundreds of MB.
@@ -221,35 +227,52 @@ def resolve_download_url(
     year_str = str(data_year)
     datasets = catalog.get("dataset", []) if isinstance(catalog, dict) else []
 
-    candidates: list[str] = []
+    # The CMS DKAN catalog has shifted from one-dataset-per-year (the year
+    # stamped on the dataset title/temporal) to a SINGLE dataset whose
+    # per-year files are separate distributions, each titled
+    # "... - by Provider : 2023-12-31". So we match the year at the
+    # DISTRIBUTION level when the distribution title carries it, and fall
+    # back to the dataset-level haystack for the legacy structure.
+    dist_year_re = re.compile(r"\b(20\d{2})\b")
+
+    dist_matches: list[str] = []   # year found in the distribution title
+    haystack_matches: list[str] = []  # legacy: year on the dataset, not dist
     for ds in datasets:
         if not isinstance(ds, dict):
             continue
         raw_title = str(ds.get("title", ""))
-        title_noyear = _normalize_title(raw_title.replace(year_str, " "))
+        title_noyear = _normalize_title(re.sub(r"\b(19|20)\d{2}\b", " ", raw_title))
         if title_noyear != base_title:
             continue
 
-        # Confirm the year is stamped somewhere on the dataset.
         keywords = ds.get("keyword", [])
         keyword_str = " ".join(str(k) for k in keywords) if isinstance(keywords, list) else ""
-        haystack = " ".join((
+        ds_haystack = " ".join((
             raw_title,
             keyword_str,
             str(ds.get("temporal", "")),
             str(ds.get("issued", "")),
             str(ds.get("modified", "")),
         ))
-        if year_str not in haystack:
-            continue
+        ds_year_ok = year_str in ds_haystack
 
         for dist in ds.get("distribution", []):
             if not isinstance(dist, dict):
                 continue
             url = dist.get("downloadURL")
-            if dist.get("mediaType") == "text/csv" and isinstance(url, str) and url:
-                candidates.append(url)
+            if dist.get("mediaType") != "text/csv" or not isinstance(url, str) or not url:
+                continue
+            dist_title = str(dist.get("title", ""))
+            dist_years = set(dist_year_re.findall(dist_title))
+            if dist_years:
+                # Distribution carries its own year(s): match strictly.
+                if year_str in dist_years:
+                    dist_matches.append(url)
+            elif ds_year_ok:
+                # Legacy: distribution untitled by year; trust the dataset.
+                haystack_matches.append(url)
 
+    candidates = dist_matches or haystack_matches
     if not candidates:
         raise IngestError(
             f"CMS catalog has no text/csv distribution for "
@@ -392,7 +415,12 @@ class ParseResult:
     n_rows:         int
 
 
-def parse_partd_csv(fetch: FetchResult, *, data_year: int) -> ParseResult:
+def parse_partd_csv(
+    fetch: FetchResult,
+    *,
+    data_year: int,
+    state_filter: str | None = DEFAULT_STATE_FILTER,
+) -> ParseResult:
     """Parse the Part D Prescriber CSV into a typed-by-string DataFrame.
 
     Reads ONLY the columns named in :data:`CMS_COLUMN_MAP` (selected by
@@ -400,6 +428,13 @@ def parse_partd_csv(fetch: FetchResult, *, data_year: int) -> ParseResult:
     string -- numeric exactness is preserved for the NUMERIC COPY downstream
     and Polars treats an empty CSV field as null, so suppressed/blank cells
     become SQL NULL rather than 0.
+
+    ``state_filter`` (default ``'NJ'``) keeps only rows whose
+    ``Prscrbr_State_Abrvtn`` equals the code, case-insensitively. The
+    national Part D provider file is ~1.1M rows / ~250 MB in Postgres, which
+    overruns a 512 MB free-tier project; NJ-filtering bounds it to a few MB
+    and matches the platform's NJ-first posture. ``state_filter=None``
+    (CLI ``--national``) keeps every state for a full-size deployment.
 
     Validation:
 
@@ -417,23 +452,51 @@ def parse_partd_csv(fetch: FetchResult, *, data_year: int) -> ParseResult:
         raise IngestError(f"CMS Part D file not found: {fetch.path}")
 
     # Cheap header read first so a renamed/missing column fails before we
-    # pull the (large) body into memory.
+    # pull the (large) body into memory. Match column headers
+    # CASE-INSENSITIVELY: CMS ships pure case drift between vintages (e.g.
+    # the NPI header has appeared as both 'Prscrbr_NPI' and 'PRSCRBR_NPI'),
+    # which is not a semantic rename and must not break the load. A genuine
+    # rename (no case-insensitive match) still fails loud.
     header_df = pl.read_csv(fetch.path, n_rows=0)
-    present = set(header_df.columns)
-    missing = [c for c in CMS_COLUMN_MAP if c not in present]
+    present_ci = {c.lower(): c for c in header_df.columns}
+    resolved: dict[str, str] = {}  # actual CSV header -> target column
+    missing: list[str] = []
+    for expected, target in CMS_COLUMN_MAP.items():
+        actual = present_ci.get(expected.lower())
+        if actual is None:
+            missing.append(expected)
+        else:
+            resolved[actual] = target
     if missing:
         raise IngestError(
             f"CMS Part D CSV missing expected columns {missing!r}; "
-            f"header has {sorted(present)[:12]}... "
+            f"header has {sorted(header_df.columns)[:12]}... "
             "Update CMS_COLUMN_MAP deliberately.",
         )
 
     raw = pl.read_csv(
         fetch.path,
-        columns=list(CMS_COLUMN_MAP.keys()),
+        columns=list(resolved.keys()),
         infer_schema_length=0,  # force every column to Utf8 (no int/float cast)
     )
-    df = raw.rename(dict(CMS_COLUMN_MAP))
+    df = raw.rename(resolved)
+
+    # State filter (default NJ): bound the load to one state so the national
+    # ~1.1M-row file fits a free-tier project. Case-insensitive on the
+    # two-letter postal code; None keeps every state.
+    if state_filter is not None:
+        code = state_filter.strip().upper()
+        if not code:
+            raise IngestError("state_filter must be a non-empty code or None.")
+        df = df.filter(
+            pl.col("prscrbr_state_abrvtn").str.strip_chars().str.to_uppercase()
+            == code,
+        )
+        if df.height == 0:
+            raise IngestError(
+                f"CMS Part D file {fetch.path} has 0 rows for state "
+                f"{code!r}; refusing to load an empty pull.",
+            )
 
     # Normalize NPI: trim, treat blank as null, then drop null-NPI rows.
     df = df.with_columns(
@@ -611,7 +674,26 @@ def cmd_fetch(year: int, dest_dir: Path, overwrite: bool, url: str | None) -> No
     show_default=True,
     help="Source URL recorded on every row (the CMS catalog by default).",
 )
-def cmd_load(csv_path: Path, year: int, dsn: str, source_url: str) -> None:
+@click.option(
+    "--state-filter",
+    default=DEFAULT_STATE_FILTER,
+    show_default=True,
+    help="Two-letter state code to keep (overrun guard for the 512 MB free tier).",
+)
+@click.option(
+    "--national",
+    is_flag=True,
+    default=False,
+    help="Load all states (overrides --state-filter; needs a paid/self-hosted DB).",
+)
+def cmd_load(
+    csv_path: Path,
+    year: int,
+    dsn: str,
+    source_url: str,
+    state_filter: str,
+    national: bool,
+) -> None:
     """Parse and load a previously-fetched Part D Prescriber CSV (no network).
 
     Use this when the CSV is already on disk (from a prior fetch, or an
@@ -623,6 +705,7 @@ def cmd_load(csv_path: Path, year: int, dsn: str, source_url: str) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     _validate_year(year)
 
+    eff_filter = None if national else state_filter
     fetch = FetchResult(
         path=csv_path,
         source_url=source_url,
@@ -631,8 +714,8 @@ def cmd_load(csv_path: Path, year: int, dsn: str, source_url: str) -> None:
         n_bytes=csv_path.stat().st_size,
         cache_hit=True,
     )
-    parse = parse_partd_csv(fetch, data_year=year)
-    click.echo(f"parsed {parse.n_rows} rows")
+    parse = parse_partd_csv(fetch, data_year=year, state_filter=eff_filter)
+    click.echo(f"parsed {parse.n_rows} rows (state={eff_filter or 'ALL'})")
 
     with _psycopg.connect(dsn) as conn:
         n = load_to_postgres(parse, conn)
@@ -655,22 +738,40 @@ def cmd_load(csv_path: Path, year: int, dsn: str, source_url: str) -> None:
     default=None,
     help="Explicit CSV URL; bypasses catalog resolution.",
 )
+@click.option(
+    "--state-filter",
+    default=DEFAULT_STATE_FILTER,
+    show_default=True,
+    help="Two-letter state code to keep (overrun guard for the 512 MB free tier).",
+)
+@click.option(
+    "--national",
+    is_flag=True,
+    default=False,
+    help="Load all states (overrides --state-filter; needs a paid/self-hosted DB).",
+)
 def cmd_fetch_and_load(
     year: int,
     dest_dir: Path,
     overwrite: bool,
     dsn: str,
     url: str | None,
+    state_filter: str,
+    national: bool,
 ) -> None:
     """Resolve + fetch + load one CY in a single step (the Dagster-tick command)."""
     import psycopg as _psycopg
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    eff_filter = None if national else state_filter
     fetch = fetch_partd_csv(
         data_year=year, dest_dir=dest_dir, overwrite=overwrite, url=url,
     )
-    parse = parse_partd_csv(fetch, data_year=year)
-    click.echo(f"parsed {parse.n_rows} rows (cache_hit={fetch.cache_hit})")
+    parse = parse_partd_csv(fetch, data_year=year, state_filter=eff_filter)
+    click.echo(
+        f"parsed {parse.n_rows} rows "
+        f"(cache_hit={fetch.cache_hit}, state={eff_filter or 'ALL'})",
+    )
 
     with _psycopg.connect(dsn) as conn:
         n = load_to_postgres(parse, conn)

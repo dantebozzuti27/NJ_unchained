@@ -1045,38 +1045,78 @@ export async function listTopProviderRisk(opts: {
 }): Promise<ProviderRiskCard[]> {
   const sql = getSql();
   const limit = Math.min(Math.max(opts.limit ?? 25, 1), 100);
+  // PERFORMANCE: drive from the risk view (fast: WHERE entity_kind +
+  // LIMIT), then resolve preview/identity for ONLY the top-N from the
+  // real observation table + indexed CMS PK lookups + ref tables. Joining
+  // the aggregating v_entity_fraud_risk view to the full evidence view
+  // (whose unfiltered provider_meta UNION scans ~74k roster rows) made the
+  // planner re-evaluate it per row -> ~36s. This shape is <0.15s. The
+  // plain-English explanation is token-substituted inline (same REPLACE
+  // chain as v_entity_fraud_evidence) on the ~25 surviving rows.
   const rows = (await sql`
-    WITH deduped AS (
-      SELECT DISTINCT ON (entity_id)
-        cycle, entity_id, display_name, is_nj,
-        signal_id, severity, peer_percentile, raw_value,
-        rendered_explanation, citation_authority
-      FROM derived.v_entity_fraud_evidence
+    WITH top AS (
+      SELECT cycle, entity_id, risk_score, n_signals_fired
+      FROM derived.v_entity_fraud_risk
       WHERE entity_kind = 'provider'
-      ORDER BY entity_id,
-               severity DESC NULLS LAST,
-               peer_percentile DESC NULLS LAST
+      ORDER BY risk_score DESC, entity_id ASC
+      LIMIT ${limit}
+    ),
+    prev AS (
+      SELECT DISTINCT ON (o.entity_id)
+        o.entity_id, o.cycle, o.signal_id, o.severity,
+        o.peer_bucket, o.peer_percentile, o.raw_value
+      FROM derived.fraud_signal_observation o
+      JOIN top t ON t.entity_id = o.entity_id AND t.cycle = o.cycle
+      WHERE o.entity_kind = 'provider'
+      ORDER BY o.entity_id,
+               o.severity DESC NULLS LAST,
+               o.peer_percentile DESC NULLS LAST
     )
     SELECT
-      d.cycle,
-      d.entity_id,
-      d.display_name,
-      d.is_nj,
-      d.signal_id                                  AS preview_signal_id,
-      d.severity::INT                              AS preview_severity,
-      d.peer_percentile::FLOAT8                    AS preview_peer_percentile,
-      d.raw_value::FLOAT8                          AS preview_raw_value,
-      d.rendered_explanation                       AS preview_explanation,
-      d.citation_authority                         AS preview_citation_authority,
-      COALESCE(r.risk_score, 0)::FLOAT8            AS risk_score,
-      COALESCE(r.n_signals_fired, 0)::INT          AS n_signals
-    FROM deduped d
-    LEFT JOIN derived.v_entity_fraud_risk r
-      ON  r.entity_kind = 'provider'
-      AND r.cycle = d.cycle
-      AND r.entity_id = d.entity_id
-    ORDER BY r.risk_score DESC NULLS LAST, d.severity DESC, d.entity_id ASC
-    LIMIT ${limit}
+      t.cycle,
+      t.entity_id,
+      COALESCE(pd.nm, pb.nm)                        AS display_name,
+      COALESCE(pd.is_nj, pb.is_nj, FALSE)          AS is_nj,
+      p.signal_id                                  AS preview_signal_id,
+      p.severity::INT                              AS preview_severity,
+      p.peer_percentile::FLOAT8                    AS preview_peer_percentile,
+      p.raw_value::FLOAT8                          AS preview_raw_value,
+      he.citation_authority                        AS preview_citation_authority,
+      REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+        COALESCE(he.plain_english_template, ''),
+        '{{entity_id}}',       t.entity_id),
+        '{{cycle}}',           t.cycle),
+        '{{raw_value}}',       COALESCE(p.raw_value::TEXT, '')),
+        '{{peer_percentile}}', COALESCE(ROUND(p.peer_percentile * 100, 1)::TEXT, '')),
+        '{{entity_kind}}',     'provider'),
+        '{{peer_bucket}}',     COALESCE(p.peer_bucket, ''))
+                                                   AS preview_explanation,
+      t.risk_score::FLOAT8                         AS risk_score,
+      t.n_signals_fired::INT                       AS n_signals
+    FROM top t
+    LEFT JOIN prev p
+      ON p.entity_id = t.entity_id AND p.cycle = t.cycle
+    LEFT JOIN LATERAL (
+      SELECT
+        NULLIF(TRIM(COALESCE(prscrbr_first_name, '') || ' ' ||
+                    COALESCE(prscrbr_last_org_name, '')), '') AS nm,
+        (prscrbr_state_abrvtn = 'NJ')                          AS is_nj
+      FROM raw.cms_partd_prescriber
+      WHERE npi = t.entity_id AND data_year = t.cycle::INT
+      LIMIT 1
+    ) pd ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT
+        NULLIF(TRIM(COALESCE(prvdr_first_name, '') || ' ' ||
+                    COALESCE(prvdr_last_org_name, '')), '')    AS nm,
+        (prvdr_state_abrvtn = 'NJ')                            AS is_nj
+      FROM raw.cms_physician_provider
+      WHERE npi = t.entity_id AND data_year = t.cycle::INT
+      LIMIT 1
+    ) pb ON TRUE
+    LEFT JOIN ref.fraud_signal_human_explanation he
+      ON he.signal_id = p.signal_id
+    ORDER BY t.risk_score DESC, t.entity_id ASC
   `) as Record<string, unknown>[];
 
   return rows.map((r) => ({

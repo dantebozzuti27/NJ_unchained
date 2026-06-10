@@ -162,6 +162,15 @@ _COPY_COLUMNS: Final[tuple[str, ...]] = (
     "data_year", *_RAW_DATA_COLUMNS, "source_url", "source_sha256", "source_vintage",
 )
 
+# Default state filter. The national "by Provider" file is ~1.1M rows /
+# ~250 MB in Postgres, which overruns a 512 MB free-tier Neon project, so
+# the platform loads NJ by default (consistent with the Part D / Open
+# Payments / NPPES ingesters). --national opts into the full file.
+DEFAULT_STATE_FILTER: Final[str] = "NJ"
+
+# CSV header carrying the rendering-provider state (used by the NJ filter).
+_STATE_HEADER: Final[str] = "Rndrng_Prvdr_State_Abrvtn"
+
 # NPI is a 10-digit identifier (NPPES standard). Kept as a string so
 # leading zeros survive; validated, not int-cast.
 _NPI_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9]{10}$")
@@ -417,14 +426,24 @@ def _coerce_numeric(value: str, *, field: str) -> str:
     return s
 
 
-def parse_cms_provider_csv(fetch: FetchResult) -> ParseResult:
+def parse_cms_provider_csv(
+    fetch: FetchResult,
+    *,
+    state_filter: str | None = DEFAULT_STATE_FILTER,
+) -> ParseResult:
     """Parse a by-Provider CSV into a list of cleaned row tuples.
 
     Validates that every required CSV header in :data:`CMS_CSV_HEADERS`
-    is present (by name -- physical order is ignored), that every row has
-    the same field count as the header, that NPI is a 10-digit string,
-    and that the six numeric columns hold a bare decimal or a blank
-    (suppressed) cell.
+    is present (matched by name CASE-INSENSITIVELY, since CMS ships pure
+    case drift between vintages -- physical order is ignored), that every
+    row has the same field count as the header, that NPI is a 10-digit
+    string, and that the six numeric columns hold a bare decimal or a
+    blank (suppressed) cell.
+
+    ``state_filter`` (default ``'NJ'``) keeps only rows whose rendering-
+    provider state equals the code, case-insensitively, bounding the
+    national ~1.1M-row file to a free-tier-safe slice. ``state_filter=None``
+    (CLI ``--national``) keeps every state.
 
     Returns one tuple per data row in :data:`_RAW_DATA_COLUMNS` order
     (numeric cells are kept as their original decimal string so NUMERIC
@@ -434,6 +453,10 @@ def parse_cms_provider_csv(fetch: FetchResult) -> ParseResult:
     if not fetch.path.exists():
         raise IngestError(f"CMS file not found: {fetch.path}")
 
+    code = state_filter.strip().upper() if state_filter is not None else None
+    if state_filter is not None and not code:
+        raise IngestError("state_filter must be a non-empty code or None.")
+
     with fetch.path.open(encoding="utf-8-sig", newline="") as fh:
         reader = csv.reader(fh)
         try:
@@ -442,18 +465,20 @@ def parse_cms_provider_csv(fetch: FetchResult) -> ParseResult:
             raise IngestError(f"CMS file {fetch.path} is empty.") from exc
 
         header = [h.strip() for h in header]
-        index_of: dict[str, int] = {}
+        # Case-insensitive header index: lowercased name -> position.
+        index_ci: dict[str, int] = {}
         for i, name in enumerate(header):
-            index_of.setdefault(name, i)
+            index_ci.setdefault(name.lower(), i)
 
-        missing = [h for h in CMS_CSV_HEADERS if h not in index_of]
+        missing = [h for h in CMS_CSV_HEADERS if h.lower() not in index_ci]
         if missing:
             raise IngestError(
                 f"CMS file {fetch.path} missing required headers: {missing}; "
                 f"available (first 20): {header[:20]}",
             )
 
-        col_idx = [index_of[h] for h in CMS_CSV_HEADERS]
+        col_idx = [index_ci[h.lower()] for h in CMS_CSV_HEADERS]
+        state_idx = index_ci[_STATE_HEADER.lower()]
         n_header = len(header)
 
         cleaned: list[tuple[str, ...]] = []
@@ -465,6 +490,9 @@ def parse_cms_provider_csv(fetch: FetchResult) -> ParseResult:
                     f"CMS row {line_no}: got {len(row)} fields, "
                     f"expected {n_header}.",
                 )
+
+            if code is not None and row[state_idx].strip().upper() != code:
+                continue  # NJ filter (or whatever state was requested)
 
             values: list[str] = []
             for (_, raw_col), idx in zip(_CSV_TO_RAW, col_idx, strict=True):
@@ -479,8 +507,9 @@ def parse_cms_provider_csv(fetch: FetchResult) -> ParseResult:
 
     if not cleaned:
         raise IngestError(
-            f"CMS file {fetch.path} parsed 0 data rows; refusing to load "
-            "an empty pull.",
+            f"CMS file {fetch.path} parsed 0 data rows"
+            + (f" for state {code!r}" if code else "")
+            + "; refusing to load an empty pull.",
         )
 
     return ParseResult(
@@ -627,12 +656,26 @@ def cmd_fetch(data_year: int, dest_dir: Path, overwrite: bool, url: str | None) 
     default=None,
     help="Vintage stamp recorded on every row. Defaults to 'CY{data_year}'.",
 )
+@click.option(
+    "--state-filter",
+    default=DEFAULT_STATE_FILTER,
+    show_default=True,
+    help="Two-letter state code to keep (overrun guard for the 512 MB free tier).",
+)
+@click.option(
+    "--national",
+    is_flag=True,
+    default=False,
+    help="Load all states (overrides --state-filter; needs a paid/self-hosted DB).",
+)
 def cmd_load(
     csv_path: Path,
     data_year: int,
     dsn: str,
     source_url: str | None,
     source_vintage: str | None,
+    state_filter: str,
+    national: bool,
 ) -> None:
     """Parse and replace-load a previously-fetched by-Provider CSV.
 
@@ -645,6 +688,7 @@ def cmd_load(
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     eff_url = source_url or resolve_download_url(data_year=data_year)
     eff_vintage = source_vintage or f"CY{data_year}"
+    eff_filter = None if national else state_filter
 
     fetch = FetchResult(
         path=csv_path,
@@ -655,8 +699,8 @@ def cmd_load(
         cache_hit=True,
         data_year=data_year,
     )
-    parse = parse_cms_provider_csv(fetch)
-    click.echo(f"parsed {parse.n_rows} rows")
+    parse = parse_cms_provider_csv(fetch, state_filter=eff_filter)
+    click.echo(f"parsed {parse.n_rows} rows (state={eff_filter or 'ALL'})")
 
     with _psycopg.connect(dsn) as conn:
         n = load_to_postgres(parse, conn)
@@ -675,22 +719,40 @@ def cmd_load(
 @click.option("--overwrite/--no-overwrite", default=False, help="Force re-download.")
 @click.option("--dsn", envvar="PG_DSN", required=True)
 @click.option("--url", default=None, help="Override the source URL.")
+@click.option(
+    "--state-filter",
+    default=DEFAULT_STATE_FILTER,
+    show_default=True,
+    help="Two-letter state code to keep (overrun guard for the 512 MB free tier).",
+)
+@click.option(
+    "--national",
+    is_flag=True,
+    default=False,
+    help="Load all states (overrides --state-filter; needs a paid/self-hosted DB).",
+)
 def cmd_fetch_and_load(
     data_year: int,
     dest_dir: Path,
     overwrite: bool,
     dsn: str,
     url: str | None,
+    state_filter: str,
+    national: bool,
 ) -> None:
     """Fetch the by-Provider CSV for a year and replace-load it in one step."""
     import psycopg as _psycopg
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    eff_filter = None if national else state_filter
     fetch = fetch_cms_provider_csv(
         data_year=data_year, dest_dir=dest_dir, overwrite=overwrite, url=url,
     )
-    parse = parse_cms_provider_csv(fetch)
-    click.echo(f"parsed {parse.n_rows} rows (cache_hit={fetch.cache_hit})")
+    parse = parse_cms_provider_csv(fetch, state_filter=eff_filter)
+    click.echo(
+        f"parsed {parse.n_rows} rows "
+        f"(cache_hit={fetch.cache_hit}, state={eff_filter or 'ALL'})",
+    )
 
     with _psycopg.connect(dsn) as conn:
         n = load_to_postgres(parse, conn)
