@@ -1254,11 +1254,14 @@ export async function listHighValueLeads(opts: {
 }): Promise<HighValueLead[]> {
   const sql = getSql();
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
-  const priorFilter = opts.priorEnforcement;
+  // Single parameterized predicate (the Neon HTTP driver does NOT support
+  // nesting sql`` fragments): NULL ⇒ both lanes, else filter by status.
+  const priorFilter = opts.priorEnforcement ?? null;
   const rows = (await sql`
     WITH lead AS (
       SELECT * FROM derived.v_high_value_leads
-      WHERE ${priorFilter == null ? sql`TRUE` : sql`has_prior_sanction = ${priorFilter}`}
+      WHERE (${priorFilter}::boolean IS NULL
+             OR has_prior_sanction = ${priorFilter}::boolean)
       ORDER BY lead_rank
       LIMIT ${limit}
     )
