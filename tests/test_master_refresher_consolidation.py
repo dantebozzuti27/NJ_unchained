@@ -110,6 +110,8 @@ EXPECTED_SIGNAL_TO_REFRESHER = {
         "derived.refresh_signal_opioid_prescribing_outlier",
     "services_per_beneficiary_outlier":
         "derived.refresh_signal_services_per_beneficiary_outlier",
+    "antipsychotic_elderly_outlier":
+        "derived.refresh_signal_antipsychotic_elderly_outlier",
     # -------------------------------------------------------------
     # TIER 8: NPPES identity-resolution recall (1 -- mig 110)
     # -------------------------------------------------------------
@@ -228,11 +230,11 @@ def test_master_invokes_at_least_18_refreshers(
     )
 
 
-def test_fraud_signal_config_has_exactly_26_signals(
+def test_fraud_signal_config_has_exactly_27_signals(
     master_db: psycopg.Connection,
 ):
     """
-    Pin the current 26-signal taxonomy (18 pre-mig 098;
+    Pin the current 27-signal taxonomy (18 pre-mig 098;
     nj_state_candidate_on_leie added 2026-05-12 -> 19;
     provider_excluded_billing added 2026-06-08 by mig 101 -> 20;
     state_excluded_provider_billing added 2026-06-09 by mig 105 -> 21;
@@ -240,15 +242,15 @@ def test_fraud_signal_config_has_exactly_26_signals(
     services_per_beneficiary_outlier added 2026-06-09 by mig 107 -> 23;
     provider_excluded_billing_partb added 2026-06-09 by mig 109 -> 24;
     name_resolved_excluded_provider_billing added 2026-06-09 by mig 110 -> 25;
-    excluded_provider_received_open_payments added 2026-06-09 by mig 111 ->
-    26). If the count changes again, EXPECTED_SIGNAL_TO_REFRESHER MUST be
-    updated alongside.
+    excluded_provider_received_open_payments added 2026-06-09 by mig 111 -> 26;
+    antipsychotic_elderly_outlier added 2026-06-09 by mig 115 -> 27). If the
+    count changes again, EXPECTED_SIGNAL_TO_REFRESHER MUST be updated alongside.
     """
     with master_db.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM derived.fraud_signal_config")
         (n,) = cur.fetchone()
-    assert n == 26, (
-        f"fraud_signal_config has {n} rows; expected 26. If you added a "
+    assert n == 27, (
+        f"fraud_signal_config has {n} rows; expected 27. If you added a "
         f"new signal, update EXPECTED_SIGNAL_TO_REFRESHER and re-run."
     )
 

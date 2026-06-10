@@ -104,6 +104,20 @@ CMS_COLUMN_MAP: Final[dict[str, str]] = {
     "Tot_Benes":              "tot_benes",
     "Opioid_Tot_Clms":        "opioid_tot_clms",
     "Opioid_Prscrbr_Rate":    "opioid_prscrbr_rate",
+    # Behavioral prescribing fields (mig 114) -- substrate for prospective,
+    # pre-enforcement detectors. CMS suppresses <11-beneficiary cells -> NULL.
+    "Opioid_LA_Tot_Clms":      "opioid_la_tot_clms",
+    "Opioid_LA_Prscrbr_Rate":  "opioid_la_prscrbr_rate",
+    "Antbtc_Tot_Clms":         "antbtc_tot_clms",
+    "Antpsyct_GE65_Tot_Clms":  "antpsyct_ge65_tot_clms",
+    "Antpsyct_GE65_Tot_Benes": "antpsyct_ge65_tot_benes",
+    "GE65_Tot_Clms":           "ge65_tot_clms",
+    "GE65_Tot_Benes":          "ge65_tot_benes",
+    "Brnd_Tot_Clms":           "brnd_tot_clms",
+    "Brnd_Tot_Drug_Cst":       "brnd_tot_drug_cst",
+    "Gnrc_Tot_Clms":           "gnrc_tot_clms",
+    "Gnrc_Tot_Drug_Cst":       "gnrc_tot_drug_cst",
+    "Bene_Avg_Risk_Scre":      "bene_avg_risk_scre",
 }
 
 # Raw columns in CSV-map order. COPY's column list uses this exact order.
@@ -119,6 +133,18 @@ _NUMERIC_RAW_COLUMNS: Final[tuple[str, ...]] = (
     "tot_benes",
     "opioid_tot_clms",
     "opioid_prscrbr_rate",
+    "opioid_la_tot_clms",
+    "opioid_la_prscrbr_rate",
+    "antbtc_tot_clms",
+    "antpsyct_ge65_tot_clms",
+    "antpsyct_ge65_tot_benes",
+    "ge65_tot_clms",
+    "ge65_tot_benes",
+    "brnd_tot_clms",
+    "brnd_tot_drug_cst",
+    "gnrc_tot_clms",
+    "gnrc_tot_drug_cst",
+    "bene_avg_risk_scre",
 )
 
 # Full COPY column list: the CY (a load-time parameter, not a CSV column),

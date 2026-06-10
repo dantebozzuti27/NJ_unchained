@@ -37,17 +37,38 @@ INCREMENT 1 SHIPPED (mig 113 + query/page rework + tests; applied to PROD):
   Nirman Tulsyan (NPI 1447323118) $25.9M Medicare/yr, services_per_beneficiary
   outlier, NOT on any list. Already-caught (Centers Lab $21M) demoted to #9239.
 
-INCREMENT 2 (NEXT -- "more healthcare data" + more undetected detectors):
-* Part D ingest currently keeps only opioid_rate + totals. ENRICH CMS_COLUMN_MAP
-  with the behavioral fields CMS already ships and we drop: Opioid_LA_* (long-
-  acting -> diversion), Antpsyct_GE65_* + Bene_GE65 (antipsychotic-in-elderly ->
-  nursing-home chemical restraint), Brnd_* vs Gnrc_* (brand-when-generic ->
-  kickback/overbilling), Bene_Avg_Risk_Scre. ALTER raw.cms_partd_prescriber +
-  reload NJ 2023/2024 (cheap; NJ slice stays a few MB).
-* Add prospective detectors on those fields (specialty-relative percentile, vol
-  floors, cited calibration) -- each flags providers BEFORE any enforcement.
-* CAVEAT to keep honest: a high-$ behavioral outlier can be a legit high-volume
-  practice. Ranking is a lead queue, not a finding (page + methodology say so).
+INCREMENT 2 SHIPPED (mig 114/115/116 + seed 051 + ingester + tests; PROD live):
+* mig 114 + ingester: ENRICHED raw.cms_partd_prescriber with 12 behavioral
+  columns CMS ships but we dropped (Opioid_LA_*, Antbtc_*, Antpsyct_GE65_* +
+  GE65_*, Brnd_*/Gnrc_*, Bene_Avg_Risk_Scre). All nullable; CMS <11-bene
+  suppression -> NULL. Reloaded PROD NJ Part D 2023 (36,308) + 2024 (37,320)
+  from cache via `cms_medicare load` (no re-download). One reload covers all
+  future Part D detectors.
+* mig 115 + seed 051: NEW prospective detector antipsychotic_elderly_outlier --
+  CMS Part D prescriber in the top-1% of its specialty on the share of elderly
+  (>=65) beneficiaries on antipsychotics (chemical-restraint / nursing-home
+  fraud). cms_utilization family, severity 4, 3 cited platform_constants.
+  Master refresher 26 -> 27 signals. PROD: 14 (2023) / 16 (2024) flagged, e.g.
+  a nurse practitioner at 79% elderly-antipsychotic rate -- NOT on any list.
+  BUG CAUGHT + FIXED before commit: first cut flagged 4,141 rows because the
+  metric is zero-inflated (most providers prescribe ZERO antipsychotics, the
+  good outcome) and CUME_DIST over a >99%-zero bucket pushed the whole zero-mode
+  to pctile >= 0.99. Fix: eligibility requires antpsyct_ge65_tot_benes > 0 (rank
+  only actual prescribers). Re-stamped mig 115 (idempotent), re-applied.
+* mig 116: lead_rank now rewards MULTI-PATTERN corroboration. The behavioral
+  detectors share one family (cms_utilization, one substrate) so n_families
+  never exceeds 1 for them; added n_signals (distinct detectors) as a tiebreak
+  after n_families, before severity. PROD: 398 undetected providers fire >=2
+  distinct detectors and now outrank single-pattern peers of equal scale.
+* Registry tests bumped (master-refresher 26->27, signal_config_and_synergy,
+  evidence_substrate, phase_f4) + dedicated test_fraud_antipsychotic_elderly_
+  outlier.py (16 tests incl. the zero-inflation guard) + leads multi-pattern
+  test. Full affected sweep green; ruff + mypy clean.
+
+FOLLOW-ON detectors now CHEAP (columns already loaded, no reload): long-acting-
+opioid diversion outlier (opioid_la_prscrbr_rate), brand-when-generic cost
+outlier (brnd_tot_drug_cst / tot_drug_cst). Each = 1 mig + 1 seed + registry
+bumps + 1 test, mirroring mig 115.
 
 CARRY-FORWARD pending: load NJ FEC itemized contributions -> super-PAC inflow
 signal (raw.fec_contribution still empty); owner decision on risk-score drift.

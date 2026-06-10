@@ -273,6 +273,37 @@ def test_provider_scale_breaks_undetected_ties(hv_db: psycopg.Connection) -> Non
     assert all(r[2] is False for r in rows)   # both undetected
 
 
+def test_multi_pattern_corroboration_outranks_single(
+    hv_db: psycopg.Connection,
+) -> None:
+    """Among undetected providers with equal financial scale and the same single
+    signal family (cms_utilization), the one tripping MORE distinct detectors
+    (n_signals) ranks first (mig 116)."""
+    with hv_db.cursor() as cur:
+        # MANY: two distinct cms_utilization detectors (n_signals=2).
+        for sig in ("opioid_prescribing_outlier", "antipsychotic_elderly_outlier"):
+            cur.execute(
+                _OBS_INSERT,
+                ("2024", "provider", "MANY", sig,
+                 50, 4, "specialty=X", 0.99, "/t"),
+            )
+        # FEW: one detector, same family, same severity (n_signals=1).
+        cur.execute(
+            _OBS_INSERT,
+            ("2024", "provider", "FEW", "opioid_prescribing_outlier",
+             50, 4, "specialty=X", 0.99, "/t"),
+        )
+        hv_db.commit()
+        cur.execute(
+            "SELECT entity_id, n_signals, n_families, lead_rank "
+            "FROM derived.v_high_value_leads ORDER BY lead_rank"
+        )
+        rows = cur.fetchall()
+    assert [r[0] for r in rows] == ["MANY", "FEW"]
+    assert rows[0][1] == 2 and rows[1][1] == 1   # n_signals
+    assert rows[0][2] == 1 and rows[1][2] == 1   # same single family
+
+
 def test_single_cycle_sanction_is_not_repeat(hv_db: psycopg.Connection) -> None:
     """One sanction cycle must NOT count as a repeat violator."""
     with hv_db.cursor() as cur:

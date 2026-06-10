@@ -132,8 +132,9 @@ def test_all_known_signals_seeded(fraud_db: psycopg.Connection) -> None:
     + 1 from migration 110 (name_resolved_excluded_provider_billing,
       leie_bearing)
     + 1 from migration 111 (excluded_provider_received_open_payments,
-      leie_bearing).
-    Twenty-six signals total.
+      leie_bearing)
+    + 1 from migration 115 (antipsychotic_elderly_outlier, cms_utilization).
+    Twenty-seven signals total.
     """
     expected = {
         "entity_on_leie": ("leie_bearing", Decimal("0.00")),
@@ -197,6 +198,10 @@ def test_all_known_signals_seeded(fraud_db: psycopg.Connection) -> None:
         # Migration 107: specialty-relative Part B services-per-beneficiary
         # overutilization tail outlier. Same cms_utilization family / gate.
         "services_per_beneficiary_outlier":
+            ("cms_utilization", Decimal("0.00")),
+        # Migration 115: specialty-relative elderly-antipsychotic
+        # (chemical-restraint) tail outlier. Same cms_utilization family / gate.
+        "antipsychotic_elderly_outlier":
             ("cms_utilization", Decimal("0.00")),
         # Migration 111: HHS-OIG-excluded provider x CMS Open Payments
         # exact-NPI overlap. Conflict-of-interest lead (industry transfer of
