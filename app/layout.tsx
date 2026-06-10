@@ -42,6 +42,12 @@ export default function RootLayout({
                 Personalize
               </Link>
               <Link
+                href="/leads"
+                className="hover:underline underline-offset-4 font-semibold text-rose-600 dark:text-rose-400"
+              >
+                Leads
+              </Link>
+              <Link
                 href="/risk"
                 className="hover:underline underline-offset-4"
               >

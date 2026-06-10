@@ -1,4 +1,74 @@
 ================================================================================
+SESSION 2026-06-09c (FRAUD-F8) -- highest-value lead ranking + 2024 recency
+================================================================================
+
+DATA RECENCY (owner flagged "2023-and-earlier is a serious problem"):
+* CMS published DY2024 in May 2026 (MUP_DPR_RY26..DY24 / MUP_PHY_R26..D24).
+  Loaded NJ-filtered DY2024: Part D 37,320 rows, Part B 39,694 rows. The loader
+  is idempotent PER calendar year (DELETE WHERE data_year then COPY, PK
+  (data_year, npi)), so 2023 and 2024 COEXIST -> cross-year repeat-violator
+  detection is now possible. refresh_all_fraud_signal_observations('2024')
+  emitted 1,345 provider observations (state_excluded_provider_billing: 52
+  providers, peak $21.0M, sum $28.7M). Neon at 245 MB (< 512 MB free tier).
+  2024 is the actionable frontier; CMS DY2025 won't release until ~mid-2027.
+
+SHIPPED (mig 112 + seed 050 + /leads page):
+* ref.fraud_reportability_channel -- REFERENCE DATA (verifiable-data invariant
+  §4): one cited row per configured signal mapping it to the enforcement channel
+  + governing statute + statutory relator-share band + ordinal reward_tier
+  (1=highest reportability reward potential .. 5=lowest, no bounty) +
+  raw_value_is_usd + is_prior_sanction. reward-share consistency CHECK. 26/26
+  signals mapped (test-enforced).
+* derived.v_high_value_leads -- one ranked row per (entity_kind, entity_id)
+  across ALL cycles. lead_rank = LEXICOGRAPHIC order over MEASURED dollars and
+  the cited mapping (best_reward_tier, peak_exposure_usd, cross-cycle
+  prior-sanction recurrence => repeat_violator, n_families => multi_source).
+  NO fabricated composite score. Materializes off small tables in <0.4s.
+* lib/queries.ts listHighValueLeads (top-N + per-kind name resolution laterals,
+  ~1.5s cold) + getHighValueLeadsSummary (tier ROLLUP + FEC-contribution probe).
+* app/leads/page.tsx -- ranked priority queue (rose theme, FRAUD-F8), summary
+  bar, reward/repeat/multi-source badges, recovery-channel + statute links, and
+  an honest "lanes this queue cannot rank yet" panel. Nav + homepage wired.
+* tests/test_fraud_high_value_leads.py -- 8 live-PG tests (channel completeness,
+  reward-share consistency, USD-signal tiering, FEC-no-bounty, ranking order,
+  repeat/multi-source flags, single-cycle-not-repeat, empty-substrate honesty).
+* Migration 112 + seed 050 applied to PROD Neon. Top lead live: Centers Lab NJ
+  LLC (NPI 1598315574) $21.0M, est. relator floor $3.15M-$6.30M, repeat+multi.
+
+NET-NEW-METRIC RATIONALE (verifiable-data invariant §7 -- the `idea` spec has
+no whistleblower/reportability/reward/501c4/527 section, so this is logged):
+  The owner asked to "rank flagged entities by financial scale and
+  reportability reward potential." This is an ANALYST-PRIORITIZATION layer over
+  signals the spec already defines (§5.x fraud detectors), not a new detector.
+  It introduces NO new claim about an entity -- it only ORDERS existing
+  observations by (a) dollars already measured on the observation (raw_value)
+  and (b) which real statutory enforcement/reward program applies (a cited,
+  versioned mapping). Because the FCA/qui tam reward (31 USC 3730(d)) attaches
+  to exactly the excluded-provider-billing signals, the platform's highest-value
+  leads are healthcare FCA candidates, NOT IRS-527 (see GAP below). Anchored to
+  the existing detectors; no spec drift in the detection layer.
+
+HONEST GAPS (lanes the brief asked for that the substrate cannot support):
+* IRS whistleblower 501c4/527 "unexplained flows": pure 501c4 dark money never
+  files with the FEC (IRS Form 990/8872 only, not ingested). FEC bulk exposes no
+  unexplained-flow measure. NO signal mapped to the IRS reward lane (26 USC
+  7623) rather than fabricate one. The /leads page states this plainly.
+* FEC itemized contribution flows: raw.fec_contribution is EMPTY in prod; every
+  FEC signal today is structural (count-based), not dollar-denominated. NEXT to
+  honor the political/527 side: load NJ-filtered FEC itemized contributions and
+  add a "large inflow into IE-only / Super-PAC committee (cmte_tp O/U)" signal.
+
+KNOWN PRE-EXISTING FAILURE (NOT caused by this session; do not mask):
+* test_migrations_fraud_risk_score.py::test_live_view_exposes_score_per_entity
+  expects Y=97.34, gets 86.47 (v_entity_fraud_risk diversity-bonus drift).
+  Migration 112 does not touch v_entity_fraud_risk or the scoring path.
+
+NEXT:
+* One-click brief + complaint generation (owner deferred: "ignore for now").
+* Load NJ-filtered FEC itemized contributions -> super-PAC inflow-scale signal.
+* Owner decision on the risk-score drift (97.34 vs 86.47).
+
+================================================================================
 SESSION 2026-06-09b (FRAUD-F7 CONT'D) -- healthcare-fraud program extended
 22 -> 26 signals; NPPES identity-spine substrate landed end-to-end, its
 Phase-3 recall payoff (name-resolved exclusion billing) shipped, AND the CMS

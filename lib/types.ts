@@ -330,6 +330,75 @@ export interface HealthcareSubstrateStatus {
   n_provider_observations: number;
 }
 
+/**
+ * One ranked entity in the /leads "highest-value fraud" queue
+ * (derived.v_high_value_leads, joined to per-kind name resolution for the
+ * top-N only). The ranking is lexicographic over MEASURED dollars and a
+ * CITED statute→reward mapping (ref.fraud_reportability_channel), never a
+ * fabricated composite score — see migration 112.
+ */
+export interface HighValueLead {
+  /** 1-based position in the full lexicographic ranking. */
+  lead_rank: number;
+  entity_kind: EntityKind;
+  entity_id: string;
+  display_name: string | null;
+  is_nj: boolean;
+  /** Most recent cycle this entity fired any signal (provider cycle = CMS data_year). */
+  latest_cycle: string;
+  /** Distinct cycles the entity appears in. */
+  n_cycles: number;
+  n_signals: number;
+  /** Distinct signal FAMILIES — >=2 is a multi-source hit. */
+  n_families: number;
+  max_severity: number;
+  /** 1 = highest reportability reward potential … 5 = lowest (no bounty). */
+  best_reward_tier: number;
+  reward_eligible: boolean;
+  /** A prior-sanction signal recurred across ≥2 cycles (penalty failed to deter). */
+  repeat_violator: boolean;
+  multi_source: boolean;
+  /** Peak single-cycle USD exposure (null where the driving signal isn't dollar-denominated). */
+  peak_exposure_usd: number | null;
+  /** USD exposure summed across cycles. */
+  total_exposure_usd: number | null;
+  /** Statutory relator-share floor on peak exposure (15% band); null when not reward-eligible. */
+  reward_low_usd: number | null;
+  /** Statutory relator-share ceiling on peak exposure (30% band). */
+  reward_high_usd: number | null;
+  driver_signal_id: string;
+  driver_signal_family: string;
+  /** Enforcement/reward program for the driving signal (e.g. "DOJ False Claims Act (qui tam)"). */
+  recovery_program: string;
+  /** Where a report is actually filed. */
+  recovery_channel: string;
+  recovery_channel_url: string;
+  /** Governing statute (e.g. "31 U.S.C. § 3730(d)"). */
+  statute_citation: string;
+  statute_url: string;
+}
+
+/**
+ * Aggregate framing for the /leads page: tier counts + headline totals, plus
+ * the honest "lanes we cannot yet rank" (IRS 501c4/527 dark money, FEC
+ * itemized flows) so the page never implies a ranking it lacks the substrate
+ * to produce.
+ */
+export interface HighValueLeadsSummary {
+  /** lead count by reward_tier (1..5). */
+  count_by_tier: Record<string, number>;
+  n_total: number;
+  n_reward_eligible: number;
+  n_repeat_violators: number;
+  n_multi_source: number;
+  /** Peak USD exposure across all leads. */
+  max_exposure_usd: number | null;
+  /** Sum of peak-exposure USD across reward-eligible leads. */
+  total_reward_eligible_exposure_usd: number | null;
+  /** Itemized FEC contribution rows loaded (0 ⇒ political-flow lane dormant). */
+  n_fec_contribution: number;
+}
+
 export interface PlatformStatus {
   db_reachable: boolean;
   error?: string;

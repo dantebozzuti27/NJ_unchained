@@ -138,6 +138,12 @@ function Hero({ headline }: { headline: NjAffordabilityHeadline | null }) {
             County burden table
           </Link>
           <Link
+            href="/leads"
+            className="inline-flex items-center gap-2 rounded-lg border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 px-5 py-2.5 text-sm font-semibold text-rose-800 dark:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-950/70"
+          >
+            Highest-value leads
+          </Link>
+          <Link
             href="/risk"
             className="inline-flex items-center gap-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-5 py-2.5 text-sm font-semibold hover:bg-zinc-100 dark:hover:bg-zinc-800"
           >

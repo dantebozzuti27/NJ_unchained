@@ -27,6 +27,8 @@ import type {
   EvidenceCard,
   HealthcareSignalCatalogEntry,
   HealthcareSubstrateStatus,
+  HighValueLead,
+  HighValueLeadsSummary,
   NjAnomalyCard,
   NjCivicIntegritySummary,
   NjFederalOfficial,
@@ -1226,5 +1228,194 @@ export async function getHealthcareSubstrateStatus(): Promise<HealthcareSubstrat
     n_nppes_provider: Number(r.n_nppes ?? 0),
     n_leie: Number(r.n_leie ?? 0),
     n_provider_observations: Number(r.n_obs ?? 0),
+  };
+}
+
+/**
+ * The /leads "highest-value fraud" queue. Reads the pre-ranked
+ * derived.v_high_value_leads (ordered by lead_rank: reportability reward
+ * tier, then measured USD exposure, then cross-cycle prior-sanction
+ * recurrence, then multi-source breadth — all grounded, no magic score),
+ * then resolves a display name + NJ flag for ONLY the top-N rows via indexed
+ * per-kind lookups (provider→CMS, candidate/committee→FEC master). The whole
+ * view materializes off small tables in <0.4s; name resolution touches ~N
+ * rows. Degrades to [] on any failure so a fresh deploy serves an empty
+ * queue, not a 500.
+ */
+export async function listHighValueLeads(opts: {
+  limit?: number;
+}): Promise<HighValueLead[]> {
+  const sql = getSql();
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+  const rows = (await sql`
+    WITH lead AS (
+      SELECT * FROM derived.v_high_value_leads
+      ORDER BY lead_rank
+      LIMIT ${limit}
+    )
+    SELECT
+      l.lead_rank::INT                               AS lead_rank,
+      l.entity_kind,
+      l.entity_id,
+      COALESCE(
+        pd.nm, pb.nm, cand.cand_name, cmte.cmte_nm,
+        CASE l.entity_kind
+          WHEN 'treasurer' THEN l.entity_id
+          WHEN 'address'   THEN SPLIT_PART(l.entity_id, '|', 1)
+          ELSE NULL
+        END
+      )                                              AS display_name,
+      COALESCE(pd.is_nj, pb.is_nj, cand.is_nj, cmte.is_nj, FALSE) AS is_nj,
+      l.latest_cycle,
+      l.n_cycles::INT                                AS n_cycles,
+      l.n_signals::INT                               AS n_signals,
+      l.n_families::INT                              AS n_families,
+      l.max_severity::INT                            AS max_severity,
+      l.best_reward_tier::INT                        AS best_reward_tier,
+      l.reward_eligible,
+      l.repeat_violator,
+      l.multi_source,
+      l.peak_exposure_usd::FLOAT8                    AS peak_exposure_usd,
+      l.total_exposure_usd::FLOAT8                   AS total_exposure_usd,
+      l.reward_low_usd::FLOAT8                       AS reward_low_usd,
+      l.reward_high_usd::FLOAT8                      AS reward_high_usd,
+      l.driver_signal_id,
+      l.driver_signal_family,
+      l.recovery_program,
+      l.recovery_channel,
+      l.recovery_channel_url,
+      l.statute_citation,
+      l.statute_url
+    FROM lead l
+    LEFT JOIN LATERAL (
+      SELECT
+        NULLIF(TRIM(COALESCE(prscrbr_first_name, '') || ' ' ||
+                    COALESCE(prscrbr_last_org_name, '')), '') AS nm,
+        (prscrbr_state_abrvtn = 'NJ')                          AS is_nj
+      FROM raw.cms_partd_prescriber
+      WHERE l.entity_kind = 'provider' AND npi = l.entity_id
+      ORDER BY data_year DESC
+      LIMIT 1
+    ) pd ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT
+        NULLIF(TRIM(COALESCE(prvdr_first_name, '') || ' ' ||
+                    COALESCE(prvdr_last_org_name, '')), '')    AS nm,
+        (prvdr_state_abrvtn = 'NJ')                            AS is_nj
+      FROM raw.cms_physician_provider
+      WHERE l.entity_kind = 'provider' AND npi = l.entity_id
+      ORDER BY data_year DESC
+      LIMIT 1
+    ) pb ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT cand_name, (cand_office_st = 'NJ') AS is_nj
+      FROM raw.fec_candidate
+      WHERE l.entity_kind = 'candidate' AND cand_id = l.entity_id
+      ORDER BY cycle DESC
+      LIMIT 1
+    ) cand ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT cmte_nm, (cmte_st = 'NJ') AS is_nj
+      FROM raw.fec_committee
+      WHERE l.entity_kind = 'committee' AND cmte_id = l.entity_id
+      ORDER BY cycle DESC
+      LIMIT 1
+    ) cmte ON TRUE
+    ORDER BY l.lead_rank
+  `) as Record<string, unknown>[];
+
+  return rows.map((r) => ({
+    lead_rank: Number(r.lead_rank),
+    entity_kind: r.entity_kind as EntityKind,
+    entity_id: String(r.entity_id),
+    display_name: r.display_name == null ? null : String(r.display_name),
+    is_nj: Boolean(r.is_nj),
+    latest_cycle: String(r.latest_cycle),
+    n_cycles: Number(r.n_cycles),
+    n_signals: Number(r.n_signals),
+    n_families: Number(r.n_families),
+    max_severity: Number(r.max_severity),
+    best_reward_tier: Number(r.best_reward_tier),
+    reward_eligible: Boolean(r.reward_eligible),
+    repeat_violator: Boolean(r.repeat_violator),
+    multi_source: Boolean(r.multi_source),
+    peak_exposure_usd:
+      r.peak_exposure_usd == null ? null : Number(r.peak_exposure_usd),
+    total_exposure_usd:
+      r.total_exposure_usd == null ? null : Number(r.total_exposure_usd),
+    reward_low_usd: r.reward_low_usd == null ? null : Number(r.reward_low_usd),
+    reward_high_usd:
+      r.reward_high_usd == null ? null : Number(r.reward_high_usd),
+    driver_signal_id: String(r.driver_signal_id),
+    driver_signal_family: String(r.driver_signal_family ?? ""),
+    recovery_program: String(r.recovery_program ?? ""),
+    recovery_channel: String(r.recovery_channel ?? ""),
+    recovery_channel_url: String(r.recovery_channel_url ?? ""),
+    statute_citation: String(r.statute_citation ?? ""),
+    statute_url: String(r.statute_url ?? ""),
+  }));
+}
+
+/**
+ * Aggregate framing for the /leads page header: tier counts, headline
+ * totals, and the count of itemized FEC contributions loaded (0 ⇒ the
+ * political-flow / 501c4-527 lane is dormant, which the page states plainly
+ * rather than implying a ranking it cannot produce).
+ */
+export async function getHighValueLeadsSummary(): Promise<HighValueLeadsSummary> {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT
+      best_reward_tier::INT                                       AS tier,
+      COUNT(*)::INT                                               AS n,
+      COUNT(*) FILTER (WHERE reward_eligible)::INT                AS n_reward,
+      COUNT(*) FILTER (WHERE repeat_violator)::INT               AS n_repeat,
+      COUNT(*) FILTER (WHERE multi_source)::INT                  AS n_multi,
+      MAX(peak_exposure_usd)::FLOAT8                              AS max_exposure,
+      SUM(peak_exposure_usd) FILTER (WHERE reward_eligible)::FLOAT8 AS reward_exposure
+    FROM derived.v_high_value_leads
+    GROUP BY ROLLUP (best_reward_tier)
+  `) as Record<string, unknown>[];
+
+  // FEC itemized-contribution substrate (the political-flow lane); a guarded
+  // count so a missing table degrades to 0 rather than throwing.
+  const fecRows = (await sql`
+    SELECT COALESCE(
+      (SELECT COUNT(*) FROM raw.fec_contribution), 0
+    )::INT AS n_fec
+  `) as Record<string, unknown>[];
+
+  const count_by_tier: Record<string, number> = {};
+  let n_total = 0;
+  let n_reward_eligible = 0;
+  let n_repeat_violators = 0;
+  let n_multi_source = 0;
+  let max_exposure_usd: number | null = null;
+  let total_reward_eligible_exposure_usd: number | null = null;
+
+  for (const r of rows) {
+    if (r.tier == null) {
+      // The ROLLUP grand-total row.
+      n_total = Number(r.n ?? 0);
+      n_reward_eligible = Number(r.n_reward ?? 0);
+      n_repeat_violators = Number(r.n_repeat ?? 0);
+      n_multi_source = Number(r.n_multi ?? 0);
+      max_exposure_usd = r.max_exposure == null ? null : Number(r.max_exposure);
+      total_reward_eligible_exposure_usd =
+        r.reward_exposure == null ? null : Number(r.reward_exposure);
+    } else {
+      count_by_tier[String(r.tier)] = Number(r.n ?? 0);
+    }
+  }
+
+  return {
+    count_by_tier,
+    n_total,
+    n_reward_eligible,
+    n_repeat_violators,
+    n_multi_source,
+    max_exposure_usd,
+    total_reward_eligible_exposure_usd,
+    n_fec_contribution: Number(fecRows[0]?.n_fec ?? 0),
   };
 }
