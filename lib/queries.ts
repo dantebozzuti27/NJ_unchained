@@ -37,6 +37,7 @@ import type {
   ProviderRiskCard,
   RiskRow,
   SignalRow,
+  SignalValidationRow,
 } from "./types";
 
 /**
@@ -1452,4 +1453,47 @@ export async function getHighValueLeadsSummary(): Promise<HighValueLeadsSummary>
     max_undetected_scale_usd:
       sr.max_undetected_scale == null ? null : Number(sr.max_undetected_scale),
   };
+}
+
+/**
+ * Detector validation harness (derived.v_signal_validation, migration 117).
+ * Returns one row per (cycle, behavioral signal): precision / base-rate / lift
+ * of the anomaly detector measured against the prior-sanction ground-truth set,
+ * with a Wilson lower bound and the raw counts. Surfaced so the platform is
+ * honest about how well its anomaly detectors actually predict known fraud.
+ * Most-recent cycle first, then by lift (nulls last).
+ */
+export async function getSignalValidation(): Promise<SignalValidationRow[]> {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT
+      cycle,
+      signal_id,
+      signal_family,
+      n_universe::INT          AS n_universe,
+      n_positives::INT         AS n_positives,
+      n_flagged::INT           AS n_flagged,
+      n_true_positive::INT     AS n_true_positive,
+      base_rate::FLOAT8        AS base_rate,
+      precision::FLOAT8        AS precision,
+      lift::FLOAT8             AS lift,
+      precision_wilson_lo95::FLOAT8 AS precision_wilson_lo95
+    FROM derived.v_signal_validation
+    ORDER BY cycle DESC, lift DESC NULLS LAST, signal_id
+  `) as Record<string, unknown>[];
+
+  return rows.map((r) => ({
+    cycle: String(r.cycle),
+    signal_id: String(r.signal_id),
+    signal_family: String(r.signal_family),
+    n_universe: Number(r.n_universe ?? 0),
+    n_positives: Number(r.n_positives ?? 0),
+    n_flagged: Number(r.n_flagged ?? 0),
+    n_true_positive: Number(r.n_true_positive ?? 0),
+    base_rate: r.base_rate == null ? null : Number(r.base_rate),
+    precision: r.precision == null ? null : Number(r.precision),
+    lift: r.lift == null ? null : Number(r.lift),
+    precision_wilson_lo95:
+      r.precision_wilson_lo95 == null ? null : Number(r.precision_wilson_lo95),
+  }));
 }

@@ -1,4 +1,32 @@
 ================================================================================
+SESSION 2026-06-10 (FRAUD-F8 PRECISION, cont.) -- "continue" / Track A finish
+================================================================================
+
+SHIPPED THIS PASS (Track A item a3 -- surface the harness on the UI):
+* /leads now renders a "Do these detectors actually predict known fraud?" panel
+  reading derived.v_signal_validation. One row per (cycle, behavioral signal):
+  flagged, also-sanctioned (tp/positives), precision (+ Wilson 95% LB in parens),
+  base rate, lift, and a VERDICT.
+  - lib/types.ts: new SignalValidationRow interface.
+  - lib/queries.ts: getSignalValidation() (ORDER BY cycle DESC, lift DESC NULLS
+    LAST, signal_id). Plain literal SQL -- no nested sql`` fragments (Neon HTTP
+    driver limitation that bit us earlier).
+  - app/leads/page.tsx: SignalValidation() component + amber small-sample caveat.
+* VERDICT criterion is principled, NOT a magic threshold: a detector is marked
+  "sig. @95%" iff precision_wilson_lo95 > base_rate (the conservative lower bound
+  on precision clears the background sanctioned rate). Else "not sig.". This
+  encodes the small-sample honesty BY CONSTRUCTION -- with 0-3 overlaps the
+  Wilson LB collapses toward 0 and the verdict goes gray on its own.
+* PROD reality the panel now shows: of 7 rows, only 2023 services-per-beneficiary
+  marginally clears (wlo ~.00178 > base ~.00138) on TWO overlaps -> tooltip says
+  "marginal, not proven." Everything else: not sig. The UI tells the true story:
+  NJ-scale labels cannot validate these detectors yet. -> motivates Track B.
+* tsc clean, next build clean, live view query confirmed (7 rows).
+* Track A is now DONE (p1 harness, p3 bust-out detector, a3 UI panel). Remaining
+  work is Track B (p4 Open Payments kickback, p5 Oracle migration + national CMS
+  for real label volume) -- both gated as noted below.
+
+================================================================================
 SESSION 2026-06-09e (FRAUD-F8 PRECISION) -- "more precise than just anomalies?"
 ================================================================================
 

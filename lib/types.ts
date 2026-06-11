@@ -417,6 +417,34 @@ export interface HighValueLeadsSummary {
   max_undetected_scale_usd: number | null;
 }
 
+/**
+ * One row of the detector validation harness (derived.v_signal_validation):
+ * how well a behavioral detector concentrates KNOWN fraud (providers on an
+ * exclusion list) versus the background rate. Honest small-sample reporting —
+ * raw counts are exposed so a thin estimate is never over-read.
+ */
+export interface SignalValidationRow {
+  cycle: string;
+  signal_id: string;
+  signal_family: string;
+  /** Billing providers in the universe for the cycle. */
+  n_universe: number;
+  /** Providers in the universe that are on an exclusion list (the labels). */
+  n_positives: number;
+  /** Providers this detector flagged. */
+  n_flagged: number;
+  /** Flagged providers that are also on an exclusion list (true positives). */
+  n_true_positive: number;
+  /** P(sanctioned) in the universe. Null when no labels exist this cycle. */
+  base_rate: number | null;
+  /** P(sanctioned | flagged by this detector). Null when nothing flagged. */
+  precision: number | null;
+  /** precision / base_rate. >1 ⇒ concentrates known fraud above chance. */
+  lift: number | null;
+  /** Wilson-score 95% lower bound on precision (conservative small-sample floor). */
+  precision_wilson_lo95: number | null;
+}
+
 export interface PlatformStatus {
   db_reachable: boolean;
   error?: string;

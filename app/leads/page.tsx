@@ -1,9 +1,17 @@
 import Link from "next/link";
 
 import { isDbReachable } from "@/lib/db";
-import { getHighValueLeadsSummary, listHighValueLeads } from "@/lib/queries";
+import {
+  getHighValueLeadsSummary,
+  getSignalValidation,
+  listHighValueLeads,
+} from "@/lib/queries";
 import { fmtUsd } from "@/lib/format";
-import type { HighValueLead, HighValueLeadsSummary } from "@/lib/types";
+import type {
+  HighValueLead,
+  HighValueLeadsSummary,
+  SignalValidationRow,
+} from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -68,15 +76,17 @@ export default async function LeadsPage() {
   let summary: HighValueLeadsSummary | null = null;
   let undetected: HighValueLead[] = [];
   let alreadyCaught: HighValueLead[] = [];
+  let validation: SignalValidationRow[] = [];
   let dbError: string | null = null;
 
   if (reachable.reachable) {
     try {
       summary = await getHighValueLeadsSummary();
       if (summary.n_total > 0) {
-        [undetected, alreadyCaught] = await Promise.all([
+        [undetected, alreadyCaught, validation] = await Promise.all([
           listHighValueLeads({ limit: 40, priorEnforcement: false }),
           listHighValueLeads({ limit: 12, priorEnforcement: true }),
+          getSignalValidation(),
         ]);
       }
     } catch (e) {
@@ -111,6 +121,7 @@ export default async function LeadsPage() {
           ) : (
             <DormantNotice />
           )}
+          {validation.length > 0 && <SignalValidation rows={validation} />}
           {summary && <DormantLanes summary={summary} />}
           <Methodology />
         </>
@@ -578,6 +589,146 @@ function DormantLanes({ summary }: { summary: HighValueLeadsSummary }) {
             )}
           </p>
         </div>
+      </div>
+    </section>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/*  Signal validation harness (honest precision/lift)              */
+/* ---------------------------------------------------------------- */
+
+const VALIDATION_VERSION = "3.5.0-fraud-signal-validation-harness-v1";
+
+function pct(x: number | null): string {
+  return x == null ? "—" : `${(x * 100).toFixed(2)}%`;
+}
+
+function SignalValidation({ rows }: { rows: SignalValidationRow[] }) {
+  // A detector is "distinguishable from chance" only if the conservative
+  // (Wilson 95%) lower bound on its precision exceeds the background sanctioned
+  // rate. This is a derived comparison — no magic threshold — so the verdict is
+  // honest about thin samples by construction.
+  const distinguishable = (r: SignalValidationRow) =>
+    r.precision_wilson_lo95 != null &&
+    r.base_rate != null &&
+    r.precision_wilson_lo95 > r.base_rate;
+
+  return (
+    <section className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5">
+      <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-sm font-semibold tracking-tight">
+          Do these detectors actually predict known fraud?
+        </h2>
+        <code className="font-mono text-[10px] text-zinc-400">
+          {VALIDATION_VERSION}
+        </code>
+      </div>
+      <p className="max-w-3xl text-xs text-zinc-500">
+        Each behavioral detector is scored against the platform&rsquo;s own
+        ground truth &mdash; providers already on an exclusion list
+        (LEIE/NJ-Medicaid/SAM). <strong>Precision</strong> = share of flagged
+        providers who are sanctioned; <strong>base rate</strong> = sanctioned
+        share of all billing providers; <strong>lift</strong> = precision ÷ base
+        rate. A detector only &ldquo;beats chance&rdquo; if the conservative 95%
+        lower bound on its precision clears the base rate.
+      </p>
+
+      <div className="mt-3 rounded-md border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/30 p-3 text-[11px] leading-relaxed text-amber-800 dark:text-amber-200">
+        <strong>Honest caveat — labels are too thin at NJ scale.</strong> The
+        ground-truth set (providers excluded <em>and</em> still billing) is only
+        a handful of NPIs per year, so the &ldquo;true positive&rdquo; overlaps
+        below are single-digit and the lift figures are <em>not yet
+        statistically meaningful</em>. The counts are shown precisely so the
+        thinness is visible, never hidden. Validating precision properly needs a
+        national billing universe (thousands of labels) &mdash; the next data
+        step. This panel is the platform measuring itself, not a claim that any
+        detector is proven.
+      </div>
+
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full border-collapse text-xs">
+          <thead>
+            <tr className="border-b border-zinc-200 dark:border-zinc-800 text-left text-[10px] uppercase tracking-wider text-zinc-500">
+              <th className="py-2 pr-3 font-semibold">Detector</th>
+              <th className="py-2 pr-3 font-semibold">Cycle</th>
+              <th className="py-2 pr-3 text-right font-semibold">Flagged</th>
+              <th className="py-2 pr-3 text-right font-semibold">
+                Also sanctioned
+              </th>
+              <th className="py-2 pr-3 text-right font-semibold">
+                Precision (95% LB)
+              </th>
+              <th className="py-2 pr-3 text-right font-semibold">Base rate</th>
+              <th className="py-2 pr-3 text-right font-semibold">Lift</th>
+              <th className="py-2 pl-3 font-semibold">Verdict</th>
+            </tr>
+          </thead>
+          <tbody className="font-mono">
+            {rows.map((r) => {
+              const ok = distinguishable(r);
+              return (
+                <tr
+                  key={`${r.cycle}|${r.signal_id}`}
+                  className="border-b border-zinc-100 dark:border-zinc-800/60"
+                >
+                  <td className="py-1.5 pr-3">
+                    <span className="font-sans text-zinc-700 dark:text-zinc-300">
+                      {r.signal_id}
+                    </span>
+                  </td>
+                  <td className="py-1.5 pr-3 text-zinc-500">{r.cycle}</td>
+                  <td className="py-1.5 pr-3 text-right">
+                    {r.n_flagged.toLocaleString()}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right">
+                    {r.n_true_positive}
+                    <span className="text-zinc-400"> / {r.n_positives}</span>
+                  </td>
+                  <td className="py-1.5 pr-3 text-right">
+                    {pct(r.precision)}
+                    <span className="text-zinc-400">
+                      {" "}
+                      ({pct(r.precision_wilson_lo95)})
+                    </span>
+                  </td>
+                  <td className="py-1.5 pr-3 text-right text-zinc-500">
+                    {pct(r.base_rate)}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right">
+                    {r.lift == null ? "—" : `${r.lift.toFixed(2)}×`}
+                  </td>
+                  <td className="py-1.5 pl-3">
+                    <span
+                      className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-sans font-semibold ${
+                        ok
+                          ? "bg-emerald-100 text-emerald-900 dark:bg-emerald-900 dark:text-emerald-100"
+                          : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+                      }`}
+                      title={
+                        ok
+                          ? `95% lower bound on precision (${pct(
+                              r.precision_wilson_lo95,
+                            )}) exceeds the base rate (${pct(
+                              r.base_rate,
+                            )}) — but on only ${r.n_true_positive} overlap${
+                              r.n_true_positive === 1 ? "" : "s"
+                            }, so read it as marginal, not proven.`
+                          : `95% lower bound on precision (${pct(
+                              r.precision_wilson_lo95,
+                            )}) does not clear the base rate (${pct(
+                              r.base_rate,
+                            )}) — not statistically distinguishable from chance.`
+                      }
+                    >
+                      {ok ? "sig. @95%" : "not sig."}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </section>
   );
