@@ -1,5 +1,7 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 
+import { TableControls } from "@/components/TableControls";
 import { isDbReachable } from "@/lib/db";
 import {
   getHighValueLeadsSummary,
@@ -73,7 +75,28 @@ const KIND_LABELS: Record<string, string> = {
   nj_state_candidate: "NJ state candidate",
 };
 
-export default async function LeadsPage() {
+interface LeadsSearchParams {
+  q?: string;
+  st?: string;
+  tier?: string;
+  flag?: string;
+  sort?: string;
+  dir?: string;
+}
+
+const LEADS_SORT_OPTIONS = [
+  { value: "rank", label: "Lead rank" },
+  { value: "scale", label: "Medicare scale" },
+  { value: "severity", label: "Max severity" },
+  { value: "signals", label: "# signals" },
+];
+
+export default async function LeadsPage({
+  searchParams,
+}: {
+  searchParams: Promise<LeadsSearchParams>;
+}) {
+  const sp = await searchParams;
   const reachable = await isDbReachable();
 
   let summary: HighValueLeadsSummary | null = null;
@@ -98,7 +121,7 @@ export default async function LeadsPage() {
         [undetected, alreadyCaught, validation] = await Promise.all([
           listHighValueLeadsFromSnapshot({
             scope: "national",
-            limit: 40,
+            limit: 200,
             priorEnforcement: false,
           }),
           listHighValueLeadsFromSnapshot({
@@ -112,7 +135,7 @@ export default async function LeadsPage() {
         summary = await getHighValueLeadsSummary();
         if (summary.n_total > 0) {
           [undetected, alreadyCaught, validation] = await Promise.all([
-            listHighValueLeads({ limit: 40, priorEnforcement: false }),
+            listHighValueLeads({ limit: 200, priorEnforcement: false }),
             listHighValueLeads({ limit: 12, priorEnforcement: true }),
             getSignalValidation(),
           ]);
@@ -124,6 +147,92 @@ export default async function LeadsPage() {
   }
 
   const hasLeads = undetected.length > 0 || alreadyCaught.length > 0;
+
+  // ---- URL-driven filter + sort over the fetched undetected queue ----------
+  const q = (sp.q ?? "").trim().toLowerCase();
+  const stFilter = sp.st ?? "";
+  const tierFilter = sp.tier ?? "";
+  const flagFilter = sp.flag ?? "";
+  const sortKey = sp.sort ?? "rank";
+  const asc = sp.dir === "asc";
+
+  const stateOptions = Array.from(
+    new Set(
+      undetected
+        .map((l) => l.provider_state)
+        .filter((s): s is string => !!s),
+    ),
+  )
+    .sort()
+    .map((s) => ({ value: s, label: s }));
+  const tierOptions = Object.keys(summary?.count_by_tier ?? {})
+    .sort()
+    .map((t) => ({ value: t, label: `Tier ${t}` }));
+
+  const leadScale = (l: HighValueLead) =>
+    l.provider_scale_usd ?? l.peak_exposure_usd ?? null;
+  const numCmpLeads = (a: number | null, b: number | null) => {
+    if (a == null && b == null) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    return asc ? a - b : b - a;
+  };
+  const filteredUndetected = undetected
+    .filter((l) =>
+      q
+        ? (l.display_name ?? l.entity_id).toLowerCase().includes(q)
+        : true,
+    )
+    .filter((l) => (stFilter ? l.provider_state === stFilter : true))
+    .filter((l) =>
+      tierFilter ? String(l.best_reward_tier) === tierFilter : true,
+    )
+    .filter((l) => {
+      if (flagFilter === "multi") return l.multi_source;
+      if (flagFilter === "repeat") return l.repeat_violator;
+      return true;
+    })
+    .sort((a, b) => {
+      switch (sortKey) {
+        case "scale":
+          return numCmpLeads(leadScale(a), leadScale(b));
+        case "severity":
+          return numCmpLeads(a.max_severity, b.max_severity);
+        case "signals":
+          return numCmpLeads(a.n_signals, b.n_signals);
+        default: // rank — lower rank = higher priority
+          return asc
+            ? b.lead_rank - a.lead_rank
+            : a.lead_rank - b.lead_rank;
+      }
+    });
+
+  const leadsControls = (
+    <TableControls
+      search={{ param: "q", placeholder: "Provider name / NPI…" }}
+      filters={[
+        ...(stateOptions.length > 1
+          ? [{ param: "st", label: "State", options: stateOptions }]
+          : []),
+        ...(tierOptions.length > 1
+          ? [{ param: "tier", label: "Reward tier", options: tierOptions }]
+          : []),
+        {
+          param: "flag",
+          label: "Corroboration",
+          allLabel: "Any",
+          options: [
+            { value: "multi", label: "Multi-source" },
+            { value: "repeat", label: "Repeat violator" },
+          ],
+        },
+      ]}
+      sort={{ param: "sort", options: LEADS_SORT_OPTIONS, defaultValue: "rank" }}
+      direction={{ param: "dir", defaultValue: "desc" }}
+      shown={filteredUndetected.length}
+      total={undetected.length}
+    />
+  );
 
   return (
     <div className="space-y-8">
@@ -144,7 +253,11 @@ export default async function LeadsPage() {
           {summary && <SummaryBar summary={summary} />}
           {hasLeads ? (
             <>
-              <UndetectedQueue leads={undetected} servingSnapshot={!!snapshot} />
+              <UndetectedQueue
+                leads={filteredUndetected}
+                servingSnapshot={!!snapshot}
+                controls={leadsControls}
+              />
               {alreadyCaught.length > 0 && (
                 <AlreadyCaughtLane
                   leads={alreadyCaught}
@@ -356,9 +469,11 @@ function SummaryBar({ summary }: { summary: HighValueLeadsSummary }) {
 function UndetectedQueue({
   leads,
   servingSnapshot,
+  controls,
 }: {
   leads: HighValueLead[];
   servingSnapshot: boolean;
+  controls?: ReactNode;
 }) {
   return (
     <section>
@@ -366,7 +481,7 @@ function UndetectedQueue({
         <h2 className="text-lg font-semibold tracking-tight">
           Undetected leads
           <span className="ml-2 text-sm font-normal text-zinc-500">
-            (top {leads.length})
+            ({leads.length})
           </span>
         </h2>
         <span className="text-xs text-zinc-500">
@@ -379,15 +494,26 @@ function UndetectedQueue({
         the cases that haven&rsquo;t happened yet. A statistical outlier is a lead
         for review, not a finding of fraud.
       </p>
-      <div className="space-y-2">
-        {leads.map((l) => (
-          <LeadCard
-            key={`${l.entity_kind}|${l.entity_id}`}
-            lead={l}
-            servingSnapshot={servingSnapshot}
-          />
-        ))}
-      </div>
+      {controls && (
+        <div className="mb-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3">
+          {controls}
+        </div>
+      )}
+      {leads.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 p-8 text-center text-sm text-zinc-500">
+          No leads match the current filters.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {leads.map((l) => (
+            <LeadCard
+              key={`${l.entity_kind}|${l.entity_id}`}
+              lead={l}
+              servingSnapshot={servingSnapshot}
+            />
+          ))}
+        </div>
+      )}
     </section>
   );
 }

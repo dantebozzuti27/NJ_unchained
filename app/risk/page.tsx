@@ -1,5 +1,7 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 
+import { TableControls } from "@/components/TableControls";
 import { isDbReachable } from "@/lib/db";
 import {
   getCycleSummary,
@@ -54,6 +56,32 @@ interface SearchParams {
   cycle?: string;
   scope?: string;
   limit?: string;
+  q?: string;
+  kind?: string;
+  sort?: string;
+  dir?: string;
+}
+
+const ANOMALY_SORT_OPTIONS = [
+  { value: "score", label: "Risk score" },
+  { value: "signals", label: "# signals" },
+  { value: "severity", label: "Top severity" },
+];
+const NATIONAL_SORT_OPTIONS = [
+  { value: "score", label: "Risk score" },
+  { value: "signals", label: "# signals" },
+  { value: "families", label: "# signal families" },
+];
+
+function numericCompare(
+  a: number | null,
+  b: number | null,
+  asc: boolean,
+): number {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
+  return asc ? a - b : b - a;
 }
 
 export default async function RiskPage({
@@ -120,6 +148,103 @@ export default async function RiskPage({
     dbError = e instanceof Error ? e.message : String(e);
   }
 
+  // ---- URL-driven filter + sort over the two rankable lists ----------------
+  const fq = (params.q ?? "").trim().toLowerCase();
+  const kindFilter = params.kind ?? "";
+  const sortKey = params.sort ?? "score";
+  const asc = params.dir === "asc";
+
+  const kindOptions = (kinds: EntityKind[]) =>
+    Array.from(new Set(kinds))
+      .sort()
+      .map((k) => ({ value: k, label: KIND_LABELS[k] ?? k }));
+
+  const filteredAnomalies = anomalies
+    .filter((a) =>
+      fq
+        ? (a.display_name ?? a.entity_id).toLowerCase().includes(fq) ||
+          a.entity_id.toLowerCase().includes(fq)
+        : true,
+    )
+    .filter((a) => (kindFilter ? a.entity_kind === kindFilter : true))
+    .sort((a, b) => {
+      if (sortKey === "signals")
+        return numericCompare(a.n_signals, b.n_signals, asc);
+      if (sortKey === "severity")
+        return numericCompare(a.preview_severity, b.preview_severity, asc);
+      return numericCompare(a.risk_score, b.risk_score, asc);
+    });
+
+  const filteredNational = nationalRows
+    .filter((r) =>
+      fq
+        ? (r.display_name ?? r.entity_id).toLowerCase().includes(fq) ||
+          r.entity_id.toLowerCase().includes(fq)
+        : true,
+    )
+    .filter((r) => (kindFilter ? r.entity_kind === kindFilter : true))
+    .sort((a, b) => {
+      if (sortKey === "signals")
+        return numericCompare(a.n_signals, b.n_signals, asc);
+      if (sortKey === "families")
+        return numericCompare(
+          a.n_contributing_families,
+          b.n_contributing_families,
+          asc,
+        );
+      return numericCompare(a.risk_score, b.risk_score, asc);
+    });
+
+  const anomalyControls = anomalies.length > 0 && (
+    <TableControls
+      search={{ param: "q", placeholder: "Entity name / ID…" }}
+      filters={
+        kindOptions(anomalies.map((a) => a.entity_kind)).length > 1
+          ? [
+              {
+                param: "kind",
+                label: "Kind",
+                options: kindOptions(anomalies.map((a) => a.entity_kind)),
+              },
+            ]
+          : []
+      }
+      sort={{
+        param: "sort",
+        options: ANOMALY_SORT_OPTIONS,
+        defaultValue: "score",
+      }}
+      direction={{ param: "dir", defaultValue: "desc" }}
+      shown={filteredAnomalies.length}
+      total={anomalies.length}
+    />
+  );
+
+  const nationalControls = nationalRows.length > 0 && (
+    <TableControls
+      search={{ param: "q", placeholder: "Entity name / ID…" }}
+      filters={
+        kindOptions(nationalRows.map((r) => r.entity_kind)).length > 1
+          ? [
+              {
+                param: "kind",
+                label: "Kind",
+                options: kindOptions(nationalRows.map((r) => r.entity_kind)),
+              },
+            ]
+          : []
+      }
+      sort={{
+        param: "sort",
+        options: NATIONAL_SORT_OPTIONS,
+        defaultValue: "score",
+      }}
+      direction={{ param: "dir", defaultValue: "desc" }}
+      shown={filteredNational.length}
+      total={nationalRows.length}
+    />
+  );
+
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
@@ -167,11 +292,20 @@ export default async function RiskPage({
             cycle={cycle}
           />
           <NjStateCandidatesSection candidates={stateCandidates} />
-          <NjAnomaliesSection anomalies={anomalies} />
+          <NjAnomaliesSection
+            anomalies={filteredAnomalies}
+            totalCount={anomalies.length}
+            controls={anomalyControls || undefined}
+          />
           <ScopeBoundaryNote />
         </>
       ) : (
-        <NationalSection rows={nationalRows} cycle={cycle} />
+        <NationalSection
+          rows={filteredNational}
+          cycle={cycle}
+          totalCount={nationalRows.length}
+          controls={nationalControls || undefined}
+        />
       )}
     </div>
   );
@@ -717,7 +851,16 @@ function StateCandidateCard({
   );
 }
 
-function NjAnomaliesSection({ anomalies }: { anomalies: NjAnomalyCard[] }) {
+function NjAnomaliesSection({
+  anomalies,
+  totalCount,
+  controls,
+}: {
+  anomalies: NjAnomalyCard[];
+  totalCount?: number;
+  controls?: ReactNode;
+}) {
+  const total = totalCount ?? anomalies.length;
   return (
     <section>
       <div className="mb-3 flex items-baseline justify-between gap-3">
@@ -732,14 +875,26 @@ function NjAnomaliesSection({ anomalies }: { anomalies: NjAnomalyCard[] }) {
         </span>
       </div>
 
+      {controls && (
+        <div className="mb-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3">
+          {controls}
+        </div>
+      )}
+
       {anomalies.length === 0 ? (
         <div className="rounded-md border border-dashed border-zinc-300 dark:border-zinc-700 p-6 text-center text-sm text-zinc-500">
-          No NJ-relevant anomalies found. The substrate may not yet be
-          materialized; run{" "}
-          <code className="font-mono">
-            scripts/deploy_neon_pillar2_substrate.sh
-          </code>
-          .
+          {total === 0 ? (
+            <>
+              No NJ-relevant anomalies found. The substrate may not yet be
+              materialized; run{" "}
+              <code className="font-mono">
+                scripts/deploy_neon_pillar2_substrate.sh
+              </code>
+              .
+            </>
+          ) : (
+            <>No entities match the current filters.</>
+          )}
         </div>
       ) : (
         <div className="space-y-2">
@@ -852,17 +1007,22 @@ function AnomalyCard({ anomaly }: { anomaly: NjAnomalyCard }) {
 function NationalSection({
   rows,
   cycle,
+  totalCount,
+  controls,
 }: {
   rows: RiskRow[];
   cycle: string;
+  totalCount?: number;
+  controls?: ReactNode;
 }) {
+  const total = totalCount ?? rows.length;
   return (
     <section>
       <div className="mb-3 flex items-baseline justify-between gap-3">
         <h2 className="text-lg font-semibold tracking-tight">
-          Top {rows.length} national entities
+          Top national entities
           <span className="ml-2 text-sm font-normal text-zinc-500">
-            (cycle {cycle}, no NJ filter)
+            ({rows.length}, cycle {cycle}, no NJ filter)
           </span>
         </h2>
         <span className="text-xs text-amber-700 dark:text-amber-400">
@@ -871,8 +1031,18 @@ function NationalSection({
         </span>
       </div>
 
+      {controls && (
+        <div className="mb-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3">
+          {controls}
+        </div>
+      )}
+
       {rows.length === 0 ? (
-        <p className="text-sm text-zinc-500">No entities scored.</p>
+        <p className="text-sm text-zinc-500">
+          {total === 0
+            ? "No entities scored."
+            : "No entities match the current filters."}
+        </p>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
           <table className="min-w-full text-sm">

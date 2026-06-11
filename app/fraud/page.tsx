@@ -1,5 +1,7 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 
+import { TableControls } from "@/components/TableControls";
 import { isDbReachable } from "@/lib/db";
 import {
   getHealthcareSignalCatalog,
@@ -59,7 +61,27 @@ const BASIS_LABELS: Record<string, string> = {
   state_exclusion: "State debarment authority",
 };
 
-export default async function FraudPage() {
+interface FraudSearchParams {
+  q?: string;
+  st?: string;
+  sig?: string;
+  sort?: string;
+  dir?: string;
+}
+
+const FRAUD_SORT_OPTIONS = [
+  { value: "risk", label: "Risk score" },
+  { value: "signals", label: "# signals" },
+  { value: "severity", label: "Top severity" },
+  { value: "exposure", label: "Exposure $" },
+];
+
+export default async function FraudPage({
+  searchParams,
+}: {
+  searchParams: Promise<FraudSearchParams>;
+}) {
+  const sp = await searchParams;
   const reachable = await isDbReachable();
 
   let status: HealthcareSubstrateStatus | null = null;
@@ -74,12 +96,79 @@ export default async function FraudPage() {
         getHealthcareSignalCatalog(),
       ]);
       if (status.n_provider_observations > 0) {
-        providers = await listTopProviderRisk({ limit: 25 });
+        providers = await listTopProviderRisk({ limit: 100 });
       }
     } catch (e) {
       dbError = e instanceof Error ? e.message : String(e);
     }
   }
+
+  // ---- URL-driven filter + sort over the fetched provider queue ------------
+  const q = (sp.q ?? "").trim().toLowerCase();
+  const stFilter = sp.st ?? "";
+  const sigFilter = sp.sig ?? "";
+  const sortKey = sp.sort ?? "risk";
+  const asc = sp.dir === "asc";
+
+  const sigOptions = Array.from(
+    new Set(providers.map((p) => p.preview_signal_id)),
+  )
+    .sort()
+    .map((s) => ({ value: s, label: SIGNAL_TITLES[s] ?? s }));
+  const hasNj = providers.some((p) => p.is_nj);
+
+  const numCmp = (a: number | null, b: number | null) => {
+    if (a == null && b == null) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    return asc ? a - b : b - a;
+  };
+  const filteredProviders = providers
+    .filter((p) =>
+      q
+        ? (p.display_name ?? p.entity_id).toLowerCase().includes(q) ||
+          p.entity_id.toLowerCase().includes(q)
+        : true,
+    )
+    .filter((p) => (stFilter === "NJ" ? p.is_nj : true))
+    .filter((p) => (sigFilter ? p.preview_signal_id === sigFilter : true))
+    .sort((a, b) => {
+      switch (sortKey) {
+        case "signals":
+          return numCmp(a.n_signals, b.n_signals);
+        case "severity":
+          return numCmp(a.preview_severity, b.preview_severity);
+        case "exposure":
+          return numCmp(a.preview_raw_value, b.preview_raw_value);
+        default:
+          return numCmp(a.risk_score, b.risk_score);
+      }
+    });
+
+  const fraudControls = (
+    <TableControls
+      search={{ param: "q", placeholder: "Provider name / NPI…" }}
+      filters={[
+        ...(hasNj
+          ? [
+              {
+                param: "st",
+                label: "State",
+                allLabel: "All states",
+                options: [{ value: "NJ", label: "NJ only" }],
+              },
+            ]
+          : []),
+        ...(sigOptions.length > 1
+          ? [{ param: "sig", label: "Detector", options: sigOptions }]
+          : []),
+      ]}
+      sort={{ param: "sort", options: FRAUD_SORT_OPTIONS, defaultValue: "risk" }}
+      direction={{ param: "dir", defaultValue: "desc" }}
+      shown={filteredProviders.length}
+      total={providers.length}
+    />
+  );
 
   return (
     <div className="space-y-8">
@@ -97,7 +186,10 @@ export default async function FraudPage() {
         <>
           {status && <SubstrateStatusBar status={status} />}
           {providers.length > 0 ? (
-            <ProviderQueue providers={providers} />
+            <ProviderQueue
+              providers={filteredProviders}
+              controls={fraudControls}
+            />
           ) : (
             <DormantQueueNotice status={status} />
           )}
@@ -239,7 +331,13 @@ function SubstrateStatusBar({ status }: { status: HealthcareSubstrateStatus }) {
 /*  Provider queue (populated) / dormant notice (empty)            */
 /* ---------------------------------------------------------------- */
 
-function ProviderQueue({ providers }: { providers: ProviderRiskCard[] }) {
+function ProviderQueue({
+  providers,
+  controls,
+}: {
+  providers: ProviderRiskCard[];
+  controls?: ReactNode;
+}) {
   return (
     <section>
       <div className="mb-3 flex items-baseline justify-between gap-3">
@@ -253,11 +351,22 @@ function ProviderQueue({ providers }: { providers: ProviderRiskCard[] }) {
           One row per NPI · ordered by composite anomaly score
         </span>
       </div>
-      <div className="space-y-2">
-        {providers.map((p) => (
-          <ProviderCard key={`${p.cycle}|${p.entity_id}`} provider={p} />
-        ))}
-      </div>
+      {controls && (
+        <div className="mb-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3">
+          {controls}
+        </div>
+      )}
+      {providers.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 p-8 text-center text-sm text-zinc-500">
+          No providers match the current filters.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {providers.map((p) => (
+            <ProviderCard key={`${p.cycle}|${p.entity_id}`} provider={p} />
+          ))}
+        </div>
+      )}
     </section>
   );
 }

@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { FreshnessBadge } from "@/components/FreshnessBadge";
 import { Sparkline } from "@/components/Sparkline";
+import { TableControls } from "@/components/TableControls";
 import { isDbReachable } from "@/lib/db";
 import { fmtUsd } from "@/lib/format";
 import {
@@ -31,7 +32,26 @@ export const metadata = {
     "real wage growth across all 21 New Jersey counties.",
 };
 
-export default async function HousingPage() {
+interface HousingSearchParams {
+  q?: string;
+  sort?: string;
+  dir?: string;
+  tier?: string;
+}
+
+const SORT_OPTIONS = [
+  { value: "burden", label: "Burden ratio" },
+  { value: "name", label: "County" },
+  { value: "gap", label: "Income gap" },
+  { value: "hpi", label: "HPI growth" },
+];
+
+export default async function HousingPage({
+  searchParams,
+}: {
+  searchParams: Promise<HousingSearchParams>;
+}) {
+  const sp = await searchParams;
   const reachable = await isDbReachable();
   if (!reachable.reachable) {
     return (
@@ -84,6 +104,50 @@ export default async function HousingPage() {
     for (const h of headline.rows) headroomByFips.set(h.county_fips, h);
   }
 
+  // ---- URL-driven filter + sort (server-side over the full 21-row set) -----
+  const q = (sp.q ?? "").trim().toLowerCase();
+  const tierFilter = sp.tier ?? "";
+  const sortKey = sp.sort ?? "burden";
+  const asc = sp.dir === "asc";
+
+  const tierOptions = bands.map((b) => ({ value: b.label, label: b.label }));
+
+  // Nulls always sort last regardless of direction (no fabricated ordering).
+  const numCmp = (a: number | null, b: number | null) => {
+    if (a == null && b == null) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    return asc ? a - b : b - a;
+  };
+  const sortVal = (r: CountyBurdenRow): number | null => {
+    switch (sortKey) {
+      case "gap":
+        return headroomByFips.get(r.county_fips)?.headroom ?? null;
+      case "hpi":
+        return r.hpi_growth;
+      case "burden":
+        return r.burden_ratio;
+      default:
+        return null;
+    }
+  };
+
+  const visibleRows = rows
+    .filter((r) => (q ? r.county_name.toLowerCase().includes(q) : true))
+    .filter((r) =>
+      tierFilter
+        ? r.burden_ratio != null &&
+          burdenTier(r.burden_ratio, bands).label === tierFilter
+        : true,
+    )
+    .sort((a, b) => {
+      if (sortKey === "name") {
+        const c = a.county_name.localeCompare(b.county_name);
+        return asc ? c : -c;
+      }
+      return numCmp(sortVal(a), sortVal(b));
+    });
+
   return (
     <div className="space-y-8">
       <header className="space-y-3">
@@ -117,12 +181,35 @@ export default async function HousingPage() {
             <HeadlineAnswerCard headline={headline} rows={rows} bands={bands} />
           )}
 
-          <BurdenTable
-            rows={rows}
-            detailMap={detailMap}
-            headroomByFips={headroomByFips}
-            bands={bands}
-          />
+          <div className="space-y-3">
+            <TableControls
+              search={{ param: "q", placeholder: "County name…" }}
+              filters={[
+                { param: "tier", label: "Tier", options: tierOptions },
+              ]}
+              sort={{
+                param: "sort",
+                options: SORT_OPTIONS,
+                defaultValue: "burden",
+              }}
+              direction={{ param: "dir", defaultValue: "desc" }}
+              shown={visibleRows.length}
+              total={rows.length}
+            />
+
+            {visibleRows.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 p-8 text-center text-sm text-zinc-500">
+                No counties match the current filters.
+              </div>
+            ) : (
+              <BurdenTable
+                rows={visibleRows}
+                detailMap={detailMap}
+                headroomByFips={headroomByFips}
+                bands={bands}
+              />
+            )}
+          </div>
 
           <PersonalizeCTA />
 
