@@ -1,4 +1,85 @@
 ================================================================================
+SESSION 2026-06-10b (TRACK B) -- "then lets get new free storage" / "both"
+================================================================================
+
+OWNER STEER: "then lets get new free storage" -> chose "both" (start local
+national validation now + prep Oracle Always Free automation in parallel).
+
+WHAT WE DID (local national substrate, $0, zero signup):
+* Stood up local Docker Postgres 16 (matches Neon prod 16.14, plpgsql-only) on
+  port 5433, volume nj_pg_data. Applied ALL 118 migrations + 52 seeds via
+  nj-migrate (PG_DSN=postgresql://postgres:njlocal@localhost:5433/nj). 28 signal
+  configs -- faithful schema mirror of prod.
+* Loaded NATIONAL CMS by-provider (--national):
+    Part D 2024: 1,416,883 rows   Part D 2023: 1,380,665
+    Part B 2024: 1,296,739        Part B 2023: 1,259,343
+  + national LEIE: 83,438 exclusion rows.
+* refresh_all_fraud_signal_observations: 46,645 obs (2024), 62,189 (2023)
+  -- vs ~1,345 for NJ-only. Universe 51k -> 1.85M providers (36x).
+
+THE DECISIVE FINDING (this is the answer to "more data -> more precise?"):
+NATIONAL SCALE DID NOT FIX LABEL-BASED VALIDATION. Harness on national data:
+  2024 services  univ 1,852,322  pos 57  flag 9,895  tp 0  lift 0.00
+  2024 opioid    univ 1,852,322  pos 57  flag 31,981 tp 0  lift 0.00
+  2024 bustout   univ 1,852,322  pos 57  flag 4,145  tp 0  lift 0.00
+  2024 antipsych univ 1,852,322  pos 57  flag 554    tp 0  lift 0.00
+  2023 services  univ 1,804,693  pos 46  flag 9,706  tp 1  lift 4.04 (1 overlap)
+Positives stayed ~50, NOT thousands. Diagnosed root cause precisely:
+  - LEIE has 83,438 rows but only 8,683 (10.4%) carry a usable NPI. The rest
+    are name-only / pre-NPI-era (exclusions date to 1977; NPI added ~2010+).
+    Name-only exclusions CANNOT key-join to CMS billing.
+  - Of the 8,503 distinct LEIE NPIs, only 263 appear in the 1.85M billing
+    universe at all; only ~57 are ACTIVELY excluded AND billing in 2024 (the
+    genuine exclusion-violation). That rarity is GOOD enforcement news, bad
+    supervised-label news.
+  - CONSTRUCT MISMATCH (the real point): "excluded-and-still-billing" is a
+    DIFFERENT offense than over-utilization. An opioid/services/bustout outlier
+    has no reason to also be on the LEIE -> tp~0 BY CONSTRUCTION, even at scale.
+
+IMPLICATION (revises the Track A/B plan):
+* The binding constraint was NEVER storage/universe size -- we 36x'd it and
+  labels didn't move. So Oracle migration is NOT justified by *validation*.
+* Supervised precision validation of behavioral over-utilization detectors
+  against the exclusion list is structurally impossible. Correct label sources
+  would be DOJ/OIG civil FCA settlement lists (same phenomenon) -- but none is a
+  clean NPI-keyed national bulk table. Open research item, uncertain payoff.
+* PRECISION LEVERS THAT REMAIN VALID ARE LABEL-FREE: (1) mechanism specificity,
+  (2) corroboration from conditionally-independent families (the n_families
+  ranking we already ship). Supervised calibration is parked with evidence.
+* What national storage DOES buy: SERVING bigger/more undetected leads (rank the
+  whole country's top over-utilization providers by Medicare scale), a product
+  upgrade independent of validation. THAT is the honest rationale for Oracle.
+
+ORACLE ALWAYS FREE AUTOMATION (prepped this session, see deploy/oracle/):
+* cloud-init.yaml -- first-boot provisioning for Ubuntu 24.04 aarch64 on
+  VM.Standard.A1.Flex: installs postgresql-16 (Noble native), python3.13
+  (deadsnakes PPA -- repo requires >=3.13, Noble default is 3.12), git +
+  build deps; drops the tuning conf; creates nj role+db; clones the repo to
+  /opt/nj. Postgres listens on localhost only (SSH-tunnel posture).
+* postgresql.tuning.conf -- pg16 tuning for 24GB/4-OCPU OLAP: shared_buffers
+  6GB, effective_cache_size 18GB, work_mem 128MB, parallelism capped at 4,
+  jit off, random_page_cost 1.1. (Kept in sync with the copy embedded in
+  cloud-init.)
+* bootstrap.sh -- idempotent one-command: venv+pip install -e ., nj-migrate
+  apply/seed, national CMS load (Part D+B 2024+2023), national LEIE, per-cycle
+  refresh, prints validation snapshot. NJ_SKIP_INGEST=1 for schema-only;
+  NJ_YEARS overrides years. bash -n + YAML parse verified.
+* README.md -- runbook: HUMAN GATE = Oracle account needs the owner's card for
+  ID verification (Always Free not charged; I can't sign up for them). Honest
+  rationale: this box is for SERVING national leads, NOT validation (validation
+  is already answered locally at $0). Networking = never expose 5432, SSH tunnel
+  / Cloudflare Tunnel only. A1 capacity-scarcity + idle-reclaim caveats noted.
+  Backups = nightly pg_dump -> R2 (OPS-5) when prod cuts over.
+
+LOCAL DB STILL UP: docker container nj_pg_local (postgres:16, port 5433, volume
+nj_pg_data) holds the full national substrate -- reuse for any further national
+analysis without re-downloading. `docker start nj_pg_local` if stopped.
+
+GAP: SAM.gov exclusions not loaded (ingester fetch deferred pending auth; needs
+a hand-pulled ZIP). Would add national debarments as a second label source but
+shares the same NPI-coverage + construct-mismatch problems.
+
+================================================================================
 SESSION 2026-06-10 (FRAUD-F8 PRECISION, cont.) -- "continue" / Track A finish
 ================================================================================
 

@@ -1,0 +1,95 @@
+#cloud-config
+# Oracle Cloud Always Free bootstrap for the NJ platform's data box.
+# Target image: Canonical Ubuntu 24.04 LTS (aarch64) on VM.Standard.A1.Flex
+# (4 OCPU, 24 GB RAM, 200 GB block). Paste this into the "Cloud-init script"
+# field when launching the instance, OR pass with:
+#   oci compute instance launch --user-data-file deploy/oracle/cloud-init.yaml ...
+#
+# What it does (idempotent, runs once on first boot):
+#   1. installs PostgreSQL 16 (Noble ships pg16 natively), Python 3.13
+#      (deadsnakes), git, and build deps
+#   2. drops in the NJ Postgres tuning conf
+#   3. creates the `nj` role + database (password injected below -- CHANGE IT)
+#   4. clones the repo to /opt/nj and leaves a one-command bootstrap ready
+#
+# Security posture: Postgres listens on localhost only. Reach it via an SSH
+# tunnel (see deploy/oracle/README.md). Do NOT open 5432 to the internet.
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - postgresql-16
+  - postgresql-client-16
+  - git
+  - curl
+  - build-essential
+  - libpq-dev
+  - software-properties-common
+
+write_files:
+  # NJ Postgres tuning -- mirrored from deploy/oracle/postgresql.tuning.conf.
+  # Keep the two in sync; this copy is what the box actually runs.
+  - path: /etc/postgresql/16/main/conf.d/10-nj-tuning.conf
+    permissions: "0644"
+    content: |
+      shared_buffers = 6GB
+      effective_cache_size = 18GB
+      maintenance_work_mem = 2GB
+      work_mem = 128MB
+      max_connections = 40
+      max_wal_size = 8GB
+      min_wal_size = 2GB
+      checkpoint_completion_target = 0.9
+      wal_compression = on
+      random_page_cost = 1.1
+      effective_io_concurrency = 200
+      default_statistics_target = 200
+      max_worker_processes = 4
+      max_parallel_workers = 4
+      max_parallel_workers_per_gather = 2
+      max_parallel_maintenance_workers = 2
+      jit = off
+      listen_addresses = 'localhost'
+
+  # Role bootstrap kept in a file so the $$-quoted DO block is never exposed to
+  # the shell (where $$ would expand to the shell PID). CHANGE THE PASSWORD.
+  - path: /opt/nj-init.sql
+    permissions: "0640"
+    content: |
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nj') THEN
+          CREATE ROLE nj LOGIN PASSWORD 'CHANGE_ME_njlocal';
+        END IF;
+      END
+      $$;
+
+runcmd:
+  # --- Python 3.13 (Noble default is 3.12; the repo requires >=3.13) --------
+  - add-apt-repository -y ppa:deadsnakes/ppa
+  - apt-get update
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y python3.13 python3.13-venv python3.13-dev
+
+  # --- Postgres role + database (idempotent) -------------------------------
+  # Role from the SQL file (avoids $$/shell-PID collision). Rotate the password
+  # immediately after first login (see final_message).
+  - sudo -u postgres psql -v ON_ERROR_STOP=1 -f /opt/nj-init.sql
+  # CREATE DATABASE cannot run inside a DO block, so guard it in the shell.
+  - sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='nj'" | grep -q 1 || sudo -u postgres createdb -O nj nj
+  - systemctl restart postgresql
+
+  # --- Repo checkout --------------------------------------------------------
+  - mkdir -p /opt/nj
+  - chown ubuntu:ubuntu /opt/nj
+  - sudo -u ubuntu git clone https://github.com/dantebozzuti27/NJ_unchained.git /opt/nj || (cd /opt/nj && sudo -u ubuntu git pull)
+
+  # --- Mark ready -----------------------------------------------------------
+  - echo "cloud-init complete $(date -u)" > /opt/nj/CLOUD_INIT_DONE
+
+final_message: |
+  NJ data box ready. Next:
+    ssh ubuntu@<public-ip>
+    sudo -u postgres psql -c "ALTER ROLE nj PASSWORD '<your-strong-pw>';"
+    cd /opt/nj && PG_DSN='postgresql://nj:<your-strong-pw>@localhost:5432/nj' \
+      bash deploy/oracle/bootstrap.sh
