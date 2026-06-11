@@ -3,13 +3,16 @@ import Link from "next/link";
 import { isDbReachable } from "@/lib/db";
 import {
   getHighValueLeadsSummary,
+  getLeadsSnapshotMeta,
   getSignalValidation,
   listHighValueLeads,
+  listHighValueLeadsFromSnapshot,
 } from "@/lib/queries";
 import { fmtUsd } from "@/lib/format";
 import type {
   HighValueLead,
   HighValueLeadsSummary,
+  LeadsSnapshotMeta,
   SignalValidationRow,
 } from "@/lib/types";
 
@@ -77,17 +80,43 @@ export default async function LeadsPage() {
   let undetected: HighValueLead[] = [];
   let alreadyCaught: HighValueLead[] = [];
   let validation: SignalValidationRow[] = [];
+  let snapshot: LeadsSnapshotMeta | null = null;
   let dbError: string | null = null;
 
   if (reachable.reachable) {
     try {
-      summary = await getHighValueLeadsSummary();
-      if (summary.n_total > 0) {
+      // Prefer the pre-computed national snapshot when present; it lets this
+      // free-tier serving DB show leads it cannot rank live. Fall back to the
+      // live NJ view (guaranteed path) when no snapshot exists.
+      const meta = await getLeadsSnapshotMeta("national");
+      const useSnapshot =
+        meta != null && meta.n_shown_undetected + meta.n_shown_caught > 0;
+
+      if (useSnapshot && meta) {
+        snapshot = meta;
+        summary = summaryFromMeta(meta);
         [undetected, alreadyCaught, validation] = await Promise.all([
-          listHighValueLeads({ limit: 40, priorEnforcement: false }),
-          listHighValueLeads({ limit: 12, priorEnforcement: true }),
+          listHighValueLeadsFromSnapshot({
+            scope: "national",
+            limit: 40,
+            priorEnforcement: false,
+          }),
+          listHighValueLeadsFromSnapshot({
+            scope: "national",
+            limit: 12,
+            priorEnforcement: true,
+          }),
           getSignalValidation(),
         ]);
+      } else {
+        summary = await getHighValueLeadsSummary();
+        if (summary.n_total > 0) {
+          [undetected, alreadyCaught, validation] = await Promise.all([
+            listHighValueLeads({ limit: 40, priorEnforcement: false }),
+            listHighValueLeads({ limit: 12, priorEnforcement: true }),
+            getSignalValidation(),
+          ]);
+        }
       }
     } catch (e) {
       dbError = e instanceof Error ? e.message : String(e);
@@ -98,7 +127,9 @@ export default async function LeadsPage() {
 
   return (
     <div className="space-y-8">
-      <Hero summary={summary} />
+      <Hero summary={summary} snapshot={snapshot} />
+
+      {snapshot && <ProvenanceBanner snapshot={snapshot} />}
 
       {!reachable.reachable ? (
         <Notice
@@ -113,9 +144,13 @@ export default async function LeadsPage() {
           {summary && <SummaryBar summary={summary} />}
           {hasLeads ? (
             <>
-              <UndetectedQueue leads={undetected} />
+              <UndetectedQueue leads={undetected} servingSnapshot={!!snapshot} />
               {alreadyCaught.length > 0 && (
-                <AlreadyCaughtLane leads={alreadyCaught} summary={summary} />
+                <AlreadyCaughtLane
+                  leads={alreadyCaught}
+                  summary={summary}
+                  servingSnapshot={!!snapshot}
+                />
               )}
             </>
           ) : (
@@ -131,19 +166,70 @@ export default async function LeadsPage() {
 }
 
 /* ---------------------------------------------------------------- */
+/*  Snapshot helpers                                                */
+/* ---------------------------------------------------------------- */
+
+/** Build the page summary from the snapshot's population-level meta totals. */
+function summaryFromMeta(m: LeadsSnapshotMeta): HighValueLeadsSummary {
+  return {
+    count_by_tier: m.count_by_tier,
+    n_total: m.n_total,
+    n_reward_eligible: m.n_reward_eligible,
+    n_repeat_violators: m.n_repeat_violators,
+    n_multi_source: m.n_multi_source,
+    max_exposure_usd: m.max_exposure_usd,
+    total_reward_eligible_exposure_usd: m.total_reward_eligible_exposure_usd,
+    // FEC itemized-flow lane is independent of the CMS snapshot; the serving
+    // DB's raw.fec_contribution is the source of truth and is reported as a
+    // dormant lane below, so 0 here is honest (not a fabricated count).
+    n_fec_contribution: 0,
+    n_undetected: m.n_undetected,
+    n_already_caught: m.n_already_caught,
+    max_undetected_scale_usd: m.max_undetected_scale_usd,
+  };
+}
+
+function ProvenanceBanner({ snapshot }: { snapshot: LeadsSnapshotMeta }) {
+  const when = new Date(snapshot.snapshot_at);
+  const whenStr = isNaN(when.getTime())
+    ? snapshot.snapshot_at
+    : when.toISOString().slice(0, 16).replace("T", " ") + " UTC";
+  const shown = snapshot.n_shown_undetected + snapshot.n_shown_caught;
+  return (
+    <div className="rounded-lg border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/30 p-3 text-[11px] leading-relaxed text-emerald-900 dark:text-emerald-200">
+      <span className="font-semibold">Serving nationwide leads.</span> Ranked
+      over the full national CMS substrate ({snapshot.n_total.toLocaleString()}{" "}
+      flagged providers), then cached here as the top {shown} for display — the
+      free-tier serving DB never holds the multi-GB national files.{" "}
+      <span className="font-mono text-emerald-700 dark:text-emerald-300">
+        snapshot {whenStr} · vintage {snapshot.source_vintage_hash.slice(0, 8)} ·{" "}
+        {snapshot.formula_version}
+      </span>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
 /*  Hero                                                            */
 /* ---------------------------------------------------------------- */
 
-function Hero({ summary }: { summary: HighValueLeadsSummary | null }) {
+function Hero({
+  summary,
+  snapshot,
+}: {
+  summary: HighValueLeadsSummary | null;
+  snapshot: LeadsSnapshotMeta | null;
+}) {
   const maxScale = summary?.max_undetected_scale_usd ?? 0;
   const nUndetected = summary?.n_undetected ?? 0;
+  const national = snapshot?.source_scope === "national";
 
   return (
     <section className="relative overflow-hidden rounded-2xl border border-rose-200 dark:border-rose-900 bg-gradient-to-br from-rose-50 via-white to-amber-50 dark:from-rose-950/40 dark:via-zinc-900 dark:to-amber-950/30 p-8 sm:p-12">
       <div className="max-w-3xl space-y-6">
         <span className="inline-flex items-center gap-2 rounded-full border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-rose-800 dark:text-rose-200">
           <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
-          Undetected fraud · FRAUD-F8
+          {national ? "Undetected fraud · nationwide · FRAUD-F8" : "Undetected fraud · FRAUD-F8"}
         </span>
 
         <h1 className="text-4xl sm:text-5xl font-bold tracking-tight leading-tight">
@@ -267,7 +353,13 @@ function SummaryBar({ summary }: { summary: HighValueLeadsSummary }) {
 /*  Lead queue                                                      */
 /* ---------------------------------------------------------------- */
 
-function UndetectedQueue({ leads }: { leads: HighValueLead[] }) {
+function UndetectedQueue({
+  leads,
+  servingSnapshot,
+}: {
+  leads: HighValueLead[];
+  servingSnapshot: boolean;
+}) {
   return (
     <section>
       <div className="mb-1 flex items-baseline justify-between gap-3">
@@ -289,7 +381,11 @@ function UndetectedQueue({ leads }: { leads: HighValueLead[] }) {
       </p>
       <div className="space-y-2">
         {leads.map((l) => (
-          <LeadCard key={`${l.entity_kind}|${l.entity_id}`} lead={l} />
+          <LeadCard
+            key={`${l.entity_kind}|${l.entity_id}`}
+            lead={l}
+            servingSnapshot={servingSnapshot}
+          />
         ))}
       </div>
     </section>
@@ -299,9 +395,11 @@ function UndetectedQueue({ leads }: { leads: HighValueLead[] }) {
 function AlreadyCaughtLane({
   leads,
   summary,
+  servingSnapshot,
 }: {
   leads: HighValueLead[];
   summary: HighValueLeadsSummary | null;
+  servingSnapshot: boolean;
 }) {
   const total = summary?.n_already_caught ?? leads.length;
   return (
@@ -322,16 +420,33 @@ function AlreadyCaughtLane({
       </p>
       <div className="space-y-2 opacity-80">
         {leads.map((l) => (
-          <LeadCard key={`${l.entity_kind}|${l.entity_id}`} lead={l} dimmed />
+          <LeadCard
+            key={`${l.entity_kind}|${l.entity_id}`}
+            lead={l}
+            dimmed
+            servingSnapshot={servingSnapshot}
+          />
         ))}
       </div>
     </section>
   );
 }
 
-function LeadCard({ lead: l, dimmed }: { lead: HighValueLead; dimmed?: boolean }) {
+function LeadCard({
+  lead: l,
+  dimmed,
+  servingSnapshot,
+}: {
+  lead: HighValueLead;
+  dimmed?: boolean;
+  servingSnapshot?: boolean;
+}) {
   const meta = TIER_META[l.best_reward_tier] ?? TIER_META[5];
   const kindLabel = KIND_LABELS[l.entity_kind] ?? l.entity_kind;
+  // A drill-down detail page only resolves for entities whose raw rows live in
+  // the serving DB (NJ). National snapshot leads outside NJ have no detail page
+  // here, so render their name as plain text rather than a dead-end link.
+  const linkable = !servingSnapshot || l.is_nj;
   // Financial-scale figure: measured exposure if the signal is dollar-denominated,
   // else the provider's real Medicare volume (the undetected-lead yardstick).
   const scale =
@@ -358,10 +473,16 @@ function LeadCard({ lead: l, dimmed }: { lead: HighValueLead; dimmed?: boolean }
             <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
               {kindLabel} · {l.latest_cycle}
             </span>
-            {l.is_nj && (
+            {l.is_nj ? (
               <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold bg-emerald-100 text-emerald-900 dark:bg-emerald-900 dark:text-emerald-100">
                 NJ
               </span>
+            ) : (
+              l.provider_state && (
+                <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+                  {l.provider_state}
+                </span>
+              )
             )}
             {dimmed ? (
               <span
@@ -395,16 +516,25 @@ function LeadCard({ lead: l, dimmed }: { lead: HighValueLead; dimmed?: boolean }
               </span>
             )}
           </div>
-          <Link
-            href={`/risk/${encodeURIComponent(
-              l.entity_kind,
-            )}/${encodeURIComponent(l.entity_id)}?cycle=${encodeURIComponent(
-              l.latest_cycle,
-            )}`}
-            className="mt-1 block truncate text-base font-semibold hover:underline underline-offset-4"
-          >
-            {l.display_name ?? l.entity_id}
-          </Link>
+          {linkable ? (
+            <Link
+              href={`/risk/${encodeURIComponent(
+                l.entity_kind,
+              )}/${encodeURIComponent(l.entity_id)}?cycle=${encodeURIComponent(
+                l.latest_cycle,
+              )}`}
+              className="mt-1 block truncate text-base font-semibold hover:underline underline-offset-4"
+            >
+              {l.display_name ?? l.entity_id}
+            </Link>
+          ) : (
+            <span
+              className="mt-1 block truncate text-base font-semibold"
+              title="National lead — full detail page requires the national substrate (not held by the serving DB)."
+            >
+              {l.display_name ?? l.entity_id}
+            </span>
+          )}
           <div className="font-mono text-xs text-zinc-500">
             {l.entity_kind === "provider" ? "NPI " : ""}
             {l.entity_id}

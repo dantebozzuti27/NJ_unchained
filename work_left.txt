@@ -1,4 +1,56 @@
 ================================================================================
+SESSION 2026-06-10c -- "ok back to work" -> SERVE NATIONAL LEADS (Oracle-free)
+================================================================================
+
+THE INSIGHT: the /leads queue renders only the top ~40 rows. We do NOT need the
+multi-GB national CMS substrate in the serving DB to SHOW national leads -- we
+need only the top-N RESULT. So: rank where the national data lives (local
+Docker, or later Oracle), push a compact (<1 MB) pre-resolved snapshot to Neon.
+Free-tier serving, Postgres never exposed, no app migration. This makes the
+Oracle capacity lottery NON-BLOCKING for the actual product goal.
+
+SHIPPED (additive; the live NJ view stays as a guaranteed fallback):
+* Migration 119 derived.high_value_leads_snapshot -- self-contained top-N cache
+  (display_name/state PRE-RESOLVED by the loader, since Neon has no national raw
+  to join). Provenance per verifiable-data invariant: source_scope,
+  formula_version (FK), source_vintage_hash, snapshot_at, data_quality.
+* Migration 120 derived.leads_snapshot_meta -- one row/scope with POPULATION
+  totals (n_undetected, max scale, tier counts) so the header reports honest
+  national aggregates, not the 75-row snapshot size.
+* scripts/load_national_leads_snapshot.py (nj-load-leads-snapshot): reads top-N
+  from SOURCE v_high_value_leads (names+state resolved against the substrate),
+  computes a reproducible source_vintage_hash (sha256 over distinct CMS shas) +
+  national meta, atomically refreshes both tables on TARGET. Source/target DSNs
+  decoupled (local -> Neon).
+* lib/queries.ts: getLeadsSnapshotMeta (guarded -> null if migrations absent),
+  listHighValueLeadsFromSnapshot. lib/types.ts: LeadsSnapshotMeta + provider_state.
+* app/leads/page.tsx: prefers the national snapshot when present (provenance
+  banner, "nationwide" hero, state chips, non-NJ names rendered as plain text
+  since their /risk detail page needs the substrate); else falls back to live NJ.
+* tests/test_fraud_high_value_leads_snapshot.py (9 tests): migration contract,
+  CHECK/FK constraints, roundtrip, loader SQL executes against the live view.
+
+VERIFIED GREEN: tsc, next build, ruff, mypy, 9 snapshot tests (local AND Neon).
+Pre-existing unrelated failures: test_cms_medicare (stale fixture missing the
+114/115 behavioral columns) -- NOT touched by this work.
+
+PROD STATE (Neon): migrations 119+120 applied; national snapshot LOADED
+(n_total=76,286; n_undetected=76,184; multi_source=332; top undetected scale
+$135.8M/yr; top-60 undetected + top-15 caught staged). The CURRENTLY DEPLOYED
+frontend does not read these tables yet, so the live site is unaffected until
+the frontend is committed + pushed (Vercel auto-deploy). <-- ONLY REMAINING STEP.
+
+TOP NATIONAL UNDETECTED (snapshot): Ira Denny AZ $135.8M, Jorge Kinds AZ $126M,
+Aaron Jeng CA $124M, Keith Goss AZ $91M, Thomas Denmark OK $81M (2 families),
+Carlos Reyes Chouza FL $81M. (Lead = anomaly for review, not a finding; a
+$100M+ single NPI is usually an org/lab/infusion center.)
+
+ARCHITECTURE NOTE: this snapshot pattern likely SUPERSEDES "move the app to
+Oracle." Oracle (if/when capacity lands) becomes the scheduled REFRESH engine
+that re-runs the loader -> Neon; serving stays on Vercel+Neon at $0. The grabber
+can keep running, but it is no longer on the critical path for national serving.
+
+================================================================================
 SESSION 2026-06-10b (TRACK B) -- "then lets get new free storage" / "both"
 ================================================================================
 

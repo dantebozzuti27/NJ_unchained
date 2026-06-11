@@ -29,6 +29,7 @@ import type {
   HealthcareSubstrateStatus,
   HighValueLead,
   HighValueLeadsSummary,
+  LeadsSnapshotMeta,
   NjAnomalyCard,
   NjCivicIntegritySummary,
   NjFederalOfficial,
@@ -1344,6 +1345,143 @@ export async function listHighValueLeads(opts: {
     entity_kind: r.entity_kind as EntityKind,
     entity_id: String(r.entity_id),
     display_name: r.display_name == null ? null : String(r.display_name),
+    is_nj: Boolean(r.is_nj),
+    latest_cycle: String(r.latest_cycle),
+    n_cycles: Number(r.n_cycles),
+    n_signals: Number(r.n_signals),
+    n_families: Number(r.n_families),
+    max_severity: Number(r.max_severity),
+    best_reward_tier: Number(r.best_reward_tier),
+    reward_eligible: Boolean(r.reward_eligible),
+    prior_enforcement: Boolean(r.prior_enforcement),
+    repeat_violator: Boolean(r.repeat_violator),
+    multi_source: Boolean(r.multi_source),
+    provider_scale_usd:
+      r.provider_scale_usd == null ? null : Number(r.provider_scale_usd),
+    peak_exposure_usd:
+      r.peak_exposure_usd == null ? null : Number(r.peak_exposure_usd),
+    total_exposure_usd:
+      r.total_exposure_usd == null ? null : Number(r.total_exposure_usd),
+    reward_low_usd: r.reward_low_usd == null ? null : Number(r.reward_low_usd),
+    reward_high_usd:
+      r.reward_high_usd == null ? null : Number(r.reward_high_usd),
+    driver_signal_id: String(r.driver_signal_id),
+    driver_signal_family: String(r.driver_signal_family ?? ""),
+    recovery_program: String(r.recovery_program ?? ""),
+    recovery_channel: String(r.recovery_channel ?? ""),
+    recovery_channel_url: String(r.recovery_channel_url ?? ""),
+    statute_citation: String(r.statute_citation ?? ""),
+    statute_url: String(r.statute_url ?? ""),
+  }));
+}
+
+/**
+ * Provenance + population totals for a served leads snapshot
+ * (derived.leads_snapshot_meta). Returns null when no snapshot exists for the
+ * scope (table empty or absent) — the caller then falls back to the live view.
+ * Guarded so a serving DB without the snapshot migrations degrades gracefully.
+ */
+export async function getLeadsSnapshotMeta(
+  scope: "national" | "nj" = "national",
+): Promise<LeadsSnapshotMeta | null> {
+  const sql = getSql();
+  let rows: Record<string, unknown>[];
+  try {
+    rows = (await sql`
+      SELECT source_scope, formula_version, source_vintage_hash,
+             snapshot_at, n_total, n_undetected, n_already_caught,
+             n_multi_source, n_repeat_violators, n_reward_eligible,
+             max_undetected_scale_usd::FLOAT8 AS max_undetected_scale_usd,
+             max_exposure_usd::FLOAT8         AS max_exposure_usd,
+             total_reward_eligible_exposure_usd::FLOAT8
+               AS total_reward_eligible_exposure_usd,
+             count_by_tier, n_shown_undetected, n_shown_caught
+      FROM derived.leads_snapshot_meta
+      WHERE source_scope = ${scope}
+      LIMIT 1
+    `) as Record<string, unknown>[];
+  } catch {
+    return null; // snapshot migrations not applied on this DB
+  }
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    source_scope: String(r.source_scope) as "national" | "nj",
+    formula_version: String(r.formula_version),
+    source_vintage_hash: String(r.source_vintage_hash),
+    snapshot_at: String(r.snapshot_at),
+    n_total: Number(r.n_total ?? 0),
+    n_undetected: Number(r.n_undetected ?? 0),
+    n_already_caught: Number(r.n_already_caught ?? 0),
+    n_multi_source: Number(r.n_multi_source ?? 0),
+    n_repeat_violators: Number(r.n_repeat_violators ?? 0),
+    n_reward_eligible: Number(r.n_reward_eligible ?? 0),
+    max_undetected_scale_usd:
+      r.max_undetected_scale_usd == null
+        ? null
+        : Number(r.max_undetected_scale_usd),
+    max_exposure_usd:
+      r.max_exposure_usd == null ? null : Number(r.max_exposure_usd),
+    total_reward_eligible_exposure_usd:
+      r.total_reward_eligible_exposure_usd == null
+        ? null
+        : Number(r.total_reward_eligible_exposure_usd),
+    count_by_tier: (r.count_by_tier ?? {}) as Record<string, number>,
+    n_shown_undetected: Number(r.n_shown_undetected ?? 0),
+    n_shown_caught: Number(r.n_shown_caught ?? 0),
+  };
+}
+
+/**
+ * Serve high-value leads from the pre-resolved snapshot cache
+ * (derived.high_value_leads_snapshot) instead of the live view. Used when a
+ * national snapshot is present, so a free-tier serving DB can show national
+ * leads it could not compute locally. Same shape as listHighValueLeads.
+ */
+export async function listHighValueLeadsFromSnapshot(opts: {
+  scope?: "national" | "nj";
+  limit?: number;
+  priorEnforcement?: boolean;
+}): Promise<HighValueLead[]> {
+  const sql = getSql();
+  const scope = opts.scope ?? "national";
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+  const priorFilter = opts.priorEnforcement ?? null;
+  const rows = (await sql`
+    SELECT
+      lead_rank::INT                 AS lead_rank,
+      entity_kind, entity_id, display_name, provider_state, is_nj,
+      latest_cycle,
+      n_cycles::INT                  AS n_cycles,
+      n_signals::INT                 AS n_signals,
+      n_families::INT                AS n_families,
+      max_severity::INT              AS max_severity,
+      best_reward_tier::INT          AS best_reward_tier,
+      reward_eligible,
+      has_prior_sanction             AS prior_enforcement,
+      repeat_violator, multi_source,
+      provider_scale_usd::FLOAT8     AS provider_scale_usd,
+      peak_exposure_usd::FLOAT8      AS peak_exposure_usd,
+      total_exposure_usd::FLOAT8     AS total_exposure_usd,
+      reward_low_usd::FLOAT8         AS reward_low_usd,
+      reward_high_usd::FLOAT8        AS reward_high_usd,
+      driver_signal_id, driver_signal_family,
+      recovery_program, recovery_channel, recovery_channel_url,
+      statute_citation, statute_url
+    FROM derived.high_value_leads_snapshot
+    WHERE source_scope = ${scope}
+      AND (${priorFilter}::boolean IS NULL
+           OR has_prior_sanction = ${priorFilter}::boolean)
+    ORDER BY lead_rank
+    LIMIT ${limit}
+  `) as Record<string, unknown>[];
+
+  return rows.map((r) => ({
+    lead_rank: Number(r.lead_rank),
+    entity_kind: r.entity_kind as EntityKind,
+    entity_id: String(r.entity_id),
+    display_name: r.display_name == null ? null : String(r.display_name),
+    provider_state: r.provider_state == null ? null : String(r.provider_state),
     is_nj: Boolean(r.is_nj),
     latest_cycle: String(r.latest_cycle),
     n_cycles: Number(r.n_cycles),

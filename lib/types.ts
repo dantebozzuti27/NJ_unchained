@@ -343,6 +343,8 @@ export interface HighValueLead {
   entity_kind: EntityKind;
   entity_id: string;
   display_name: string | null;
+  /** Resolved provider state (snapshot-served leads only); null otherwise. */
+  provider_state?: string | null;
   is_nj: boolean;
   /** Most recent cycle this entity fired any signal (provider cycle = CMS data_year). */
   latest_cycle: string;
@@ -396,6 +398,30 @@ export interface HighValueLead {
  * itemized flows) so the page never implies a ranking it lacks the substrate
  * to produce.
  */
+/**
+ * Provenance + population totals for a served leads snapshot
+ * (derived.leads_snapshot_meta). Present ⇒ the /leads queue is serving a
+ * pre-computed national (or nj) snapshot rather than the live NJ view.
+ */
+export interface LeadsSnapshotMeta {
+  source_scope: "national" | "nj";
+  formula_version: string;
+  source_vintage_hash: string;
+  snapshot_at: string;
+  n_total: number;
+  n_undetected: number;
+  n_already_caught: number;
+  n_multi_source: number;
+  n_repeat_violators: number;
+  n_reward_eligible: number;
+  max_undetected_scale_usd: number | null;
+  max_exposure_usd: number | null;
+  total_reward_eligible_exposure_usd: number | null;
+  count_by_tier: Record<string, number>;
+  n_shown_undetected: number;
+  n_shown_caught: number;
+}
+
 export interface HighValueLeadsSummary {
   /** lead count by reward_tier (1..5). */
   count_by_tier: Record<string, number>;
