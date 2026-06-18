@@ -157,6 +157,32 @@ export type CountyBurdenRow = CountyRow & {
   hpi_indexed_latest: number | null;
 };
 
+/**
+ * One NJ municipality's affordability snapshot for the latest year in
+ * derived.v_muni_affordability_gap. Unlike the county burden ratio (an
+ * index divergence), this is dollar-denominated: the income HUD's 30%
+ * rule says you need to afford the town's average home, vs the county
+ * median income. The view bakes the representative profile (MFJ, 1
+ * dependent, 1 qualifying child) — the same one the landing page cites.
+ */
+export type MuniBurdenRow = {
+  muni_code: string;
+  muni_name: string;
+  county_fips: string;
+  county_name: string;
+  year: number;
+  /** DCA average residential home price for the town. */
+  home_price: number | null;
+  /** County median household income (nominal) — the income denominator. */
+  median_income: number | null;
+  /** HUD-required income to afford the town's avg home at 30% of gross. */
+  required_income: number | null;
+  /** median_income − required_income; negative ⇒ unaffordable. */
+  headroom: number | null;
+  /** required_income / median_income; >1 ⇒ unaffordable. */
+  ratio: number | null;
+};
+
 export type SeriesPoint = {
   year: number;
   /** Indexed value (HPI or income), base=100 at BURDEN_BASE_YEAR. */
@@ -361,6 +387,53 @@ export async function listCountyBurden(): Promise<CountyBurdenRow[]> {
         : Number(r.median_income_real_latest),
     hpi_indexed_latest:
       r.hpi_indexed_latest == null ? null : Number(r.hpi_indexed_latest),
+  }));
+}
+
+/**
+ * Town-level listing: every NJ municipality with a dollar-denominated
+ * affordability gap for the latest year in derived.v_muni_affordability_gap.
+ * county_name is resolved from ref.county. Ordered worst-first (most
+ * negative headroom), NULLs last — the UI re-sorts client-side via URL
+ * params. Returns all ~565 rows (small) so the page can search/filter
+ * without a roundtrip per keystroke.
+ */
+export async function listMuniAffordability(): Promise<MuniBurdenRow[]> {
+  const sql = getSql();
+  const rows = (await sql`
+    WITH latest AS (
+      SELECT MAX(year) AS y FROM derived.v_muni_affordability_gap
+    )
+    SELECT
+      m.muni_code,
+      m.muni_name,
+      m.county_fips,
+      COALESCE(c.name, m.county_fips)            AS county_name,
+      m.year::INT                                AS year,
+      m.home_price::FLOAT8                       AS home_price,
+      m.county_median_income_nominal::FLOAT8     AS median_income,
+      m.required_income_hud_30pct::FLOAT8        AS required_income,
+      m.hud_headroom_dollars::FLOAT8             AS headroom,
+      m.hud_required_to_actual_ratio::FLOAT8     AS ratio
+    FROM derived.v_muni_affordability_gap m
+    CROSS JOIN latest
+    LEFT JOIN ref.county c ON c.county_fips = m.county_fips
+    WHERE m.year = latest.y
+    ORDER BY m.hud_headroom_dollars ASC NULLS LAST, m.muni_name ASC
+  `) as Record<string, unknown>[];
+
+  return rows.map((r) => ({
+    muni_code: String(r.muni_code),
+    muni_name: String(r.muni_name),
+    county_fips: String(r.county_fips),
+    county_name: String(r.county_name),
+    year: Number(r.year),
+    home_price: r.home_price == null ? null : Number(r.home_price),
+    median_income: r.median_income == null ? null : Number(r.median_income),
+    required_income:
+      r.required_income == null ? null : Number(r.required_income),
+    headroom: r.headroom == null ? null : Number(r.headroom),
+    ratio: r.ratio == null ? null : Number(r.ratio),
   }));
 }
 

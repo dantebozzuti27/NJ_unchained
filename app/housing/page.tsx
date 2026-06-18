@@ -16,8 +16,10 @@ import {
   getCountyDetail,
   getNjAffordabilityHeadline,
   listCountyBurden,
+  listMuniAffordability,
   type CountyBurdenRow,
   type CountyHeadlineRow,
+  type MuniBurdenRow,
   type NjAffordabilityHeadline,
   type TierBand,
 } from "@/lib/housing";
@@ -33,10 +35,12 @@ export const metadata = {
 };
 
 interface HousingSearchParams {
+  view?: string;
   q?: string;
   sort?: string;
   dir?: string;
   tier?: string;
+  county?: string;
 }
 
 const SORT_OPTIONS = [
@@ -46,12 +50,20 @@ const SORT_OPTIONS = [
   { value: "hpi", label: "HPI growth" },
 ];
 
+const TOWN_SORT_OPTIONS = [
+  { value: "headroom", label: "Income gap" },
+  { value: "home", label: "Home price" },
+  { value: "required", label: "Required income" },
+  { value: "name", label: "Town" },
+];
+
 export default async function HousingPage({
   searchParams,
 }: {
   searchParams: Promise<HousingSearchParams>;
 }) {
   const sp = await searchParams;
+  const view = sp.view === "towns" ? "towns" : "counties";
   const reachable = await isDbReachable();
   if (!reachable.reachable) {
     return (
@@ -88,16 +100,31 @@ export default async function HousingPage({
 
   const countiesWithRatio = rows.filter((r) => r.burden_ratio != null);
   const detailMap = new Map<string, Awaited<ReturnType<typeof getCountyDetail>>>();
-  await Promise.all(
-    countiesWithRatio.map(async (r) => {
-      try {
-        const d = await getCountyDetail(r.county_id);
-        if (d) detailMap.set(r.county_id, d);
-      } catch {
-        /* leave missing -- row falls back to no sparkline */
-      }
-    }),
-  );
+  // Sparklines are only rendered in the county view; skip the per-county
+  // detail fetch entirely when the user is on the towns view.
+  if (view === "counties") {
+    await Promise.all(
+      countiesWithRatio.map(async (r) => {
+        try {
+          const d = await getCountyDetail(r.county_id);
+          if (d) detailMap.set(r.county_id, d);
+        } catch {
+          /* leave missing -- row falls back to no sparkline */
+        }
+      }),
+    );
+  }
+
+  // Town-level substrate (565 NJ municipalities) — only fetched for the
+  // towns view. Best-effort: a missing view must not break the page.
+  let munis: MuniBurdenRow[] = [];
+  if (view === "towns" && !err) {
+    try {
+      munis = await listMuniAffordability();
+    } catch (e) {
+      err = e instanceof Error ? e.message : String(e);
+    }
+  }
 
   const headroomByFips = new Map<string, CountyHeadlineRow>();
   if (headline != null) {
@@ -148,6 +175,43 @@ export default async function HousingPage({
       return numCmp(sortVal(a), sortVal(b));
     });
 
+  // ---- Town view: filter + sort over the ~565 municipalities --------------
+  const countyFilter = sp.county ?? "";
+  const townSortKey = sp.sort ?? "headroom";
+  // Default direction ascending so the worst (most negative headroom) lead.
+  const townAsc = sp.dir ? sp.dir === "asc" : true;
+  const countyOptions = Array.from(new Set(munis.map((m) => m.county_name)))
+    .sort()
+    .map((c) => ({ value: c, label: c }));
+  const townNumCmp = (a: number | null, b: number | null) => {
+    if (a == null && b == null) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    return townAsc ? a - b : b - a;
+  };
+  const townSortVal = (m: MuniBurdenRow): number | null => {
+    switch (townSortKey) {
+      case "home":
+        return m.home_price;
+      case "required":
+        return m.required_income;
+      case "headroom":
+        return m.headroom;
+      default:
+        return null;
+    }
+  };
+  const visibleMunis = munis
+    .filter((m) => (q ? m.muni_name.toLowerCase().includes(q) : true))
+    .filter((m) => (countyFilter ? m.county_name === countyFilter : true))
+    .sort((a, b) => {
+      if (townSortKey === "name") {
+        const c = a.muni_name.localeCompare(b.muni_name);
+        return townAsc ? c : -c;
+      }
+      return townNumCmp(townSortVal(a), townSortVal(b));
+    });
+
   return (
     <div className="space-y-8">
       <header className="space-y-3">
@@ -182,32 +246,61 @@ export default async function HousingPage({
           )}
 
           <div className="space-y-3">
-            <TableControls
-              search={{ param: "q", placeholder: "County name…" }}
-              filters={[
-                { param: "tier", label: "Tier", options: tierOptions },
-              ]}
-              sort={{
-                param: "sort",
-                options: SORT_OPTIONS,
-                defaultValue: "burden",
-              }}
-              direction={{ param: "dir", defaultValue: "desc" }}
-              shown={visibleRows.length}
-              total={rows.length}
-            />
+            <ViewToggle view={view} />
 
-            {visibleRows.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 p-8 text-center text-sm text-zinc-500">
-                No counties match the current filters.
-              </div>
+            {view === "towns" ? (
+              <>
+                <TableControls
+                  search={{ param: "q", placeholder: "Town name…" }}
+                  filters={[
+                    { param: "county", label: "County", options: countyOptions },
+                  ]}
+                  sort={{
+                    param: "sort",
+                    options: TOWN_SORT_OPTIONS,
+                    defaultValue: "headroom",
+                  }}
+                  direction={{ param: "dir", defaultValue: "asc" }}
+                  shown={visibleMunis.length}
+                  total={munis.length}
+                />
+                {visibleMunis.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 p-8 text-center text-sm text-zinc-500">
+                    No towns match the current filters.
+                  </div>
+                ) : (
+                  <TownTable rows={visibleMunis} />
+                )}
+              </>
             ) : (
-              <BurdenTable
-                rows={visibleRows}
-                detailMap={detailMap}
-                headroomByFips={headroomByFips}
-                bands={bands}
-              />
+              <>
+                <TableControls
+                  search={{ param: "q", placeholder: "County name…" }}
+                  filters={[
+                    { param: "tier", label: "Tier", options: tierOptions },
+                  ]}
+                  sort={{
+                    param: "sort",
+                    options: SORT_OPTIONS,
+                    defaultValue: "burden",
+                  }}
+                  direction={{ param: "dir", defaultValue: "desc" }}
+                  shown={visibleRows.length}
+                  total={rows.length}
+                />
+                {visibleRows.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 p-8 text-center text-sm text-zinc-500">
+                    No counties match the current filters.
+                  </div>
+                ) : (
+                  <BurdenTable
+                    rows={visibleRows}
+                    detailMap={detailMap}
+                    headroomByFips={headroomByFips}
+                    bands={bands}
+                  />
+                )}
+              </>
             )}
           </div>
 
@@ -469,6 +562,105 @@ function BurdenTable({
               </tr>
             );
           })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/*  Counties / Towns view toggle                                    */
+/* ---------------------------------------------------------------- */
+
+function ViewToggle({ view }: { view: "counties" | "towns" }) {
+  const base =
+    "px-3 py-1.5 text-sm font-medium transition-colors";
+  const active =
+    "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900";
+  const idle =
+    "bg-white dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800";
+  return (
+    <div className="inline-flex rounded-md border border-zinc-300 dark:border-zinc-700 overflow-hidden">
+      <Link
+        href="/housing"
+        className={`${base} ${view === "counties" ? active : idle}`}
+      >
+        21 counties
+      </Link>
+      <Link
+        href="/housing?view=towns"
+        className={`${base} border-l border-zinc-300 dark:border-zinc-700 ${
+          view === "towns" ? active : idle
+        }`}
+      >
+        565 towns
+      </Link>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/*  Town-level affordability table                                  */
+/* ---------------------------------------------------------------- */
+
+function TownTable({ rows }: { rows: MuniBurdenRow[] }) {
+  return (
+    <div className="overflow-x-auto rounded-xl border border-zinc-200 dark:border-zinc-800">
+      <table className="min-w-full text-sm">
+        <thead className="bg-zinc-50 dark:bg-zinc-900/60 text-left text-xs uppercase tracking-wider text-zinc-500">
+          <tr>
+            <th className="px-4 py-3">Town</th>
+            <th className="px-4 py-3 text-right">Avg home price</th>
+            <th className="px-4 py-3 text-right hidden sm:table-cell">
+              Required income (HUD)
+            </th>
+            <th className="px-4 py-3 text-right">Income gap (HUD)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((m) => (
+            <tr
+              key={`${m.county_fips}-${m.muni_code}`}
+              className="border-t border-zinc-200 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-800/50"
+            >
+              <td className="px-4 py-3">
+                <div className="font-semibold text-zinc-900 dark:text-zinc-100">
+                  {m.muni_name}
+                </div>
+                <div className="mt-0.5 text-[11px] text-zinc-500">
+                  {m.county_name} County
+                </div>
+              </td>
+              <td className="px-4 py-3 text-right font-mono">
+                {m.home_price == null ? "—" : fmtUsd(m.home_price)}
+              </td>
+              <td className="px-4 py-3 text-right font-mono hidden sm:table-cell">
+                {m.required_income == null ? "—" : fmtUsd(m.required_income)}
+              </td>
+              <td className="px-4 py-3 text-right whitespace-nowrap">
+                {m.headroom == null ? (
+                  <span className="text-zinc-500 italic text-xs">no data</span>
+                ) : (
+                  <span
+                    className={`font-mono font-semibold ${
+                      m.headroom < 0
+                        ? "text-rose-600 dark:text-rose-400"
+                        : "text-emerald-600 dark:text-emerald-400"
+                    }`}
+                    title={`${m.muni_name}: county median ${
+                      m.median_income == null ? "—" : fmtUsd(m.median_income)
+                    } vs HUD-required ${
+                      m.required_income == null
+                        ? "—"
+                        : fmtUsd(m.required_income)
+                    }`}
+                  >
+                    {signedUsd(m.headroom)}
+                  </span>
+                )}
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
