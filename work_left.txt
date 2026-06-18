@@ -1,4 +1,64 @@
 ================================================================================
+SESSION 2026-06-17 -- "continue" -> FEC DONOR-DOLLAR LANE (FRAUD-F5c/F5d) [IN PROGRESS]
+================================================================================
+
+GOAL: light up the politician page's donor-influence lane. Two signals were
+shipped as code long ago (mig 059 donor_on_leie / mig 060
+candidate_funded_by_excluded_donors) but had NEVER been materialized because
+raw.fec_contribution (itemized individual contributions, ~4 GB/cycle) was never
+loaded -- Neon free tier cannot hold it.
+
+ARCHITECTURE (substrate-box -> snapshot, same pattern as the leads snapshot):
+  1. Compute on the LOCAL Docker substrate (nj_pg_local, :5433, db `nj`), which
+     already has the full schema, all refresher fns, and LEIE (83,438 rows /
+     80,037 canonicalized). Neon never holds the 58M contribution rows.
+  2. Snapshot ONLY the resulting fraud_signal_observation rows (cycle 2024,
+     the two donor signal_ids) into Neon. Neon's existing fec_candidate 2024
+     (9,804; 257 NJ) + ref.fraud_signal_human_explanation / severity_calibration
+     / derived.fraud_signal_config rows supply all display metadata, so the
+     /risk views resolve names + is_nj + severity with no extra load.
+  WHY local-compute is mandatory (not Neon-compute on a filtered subset): the
+  refresher's peer_percentile denominator is COUNT(DISTINCT canonical donor) in
+  the cycle. Loading only matched contributions into Neon would corrupt that
+  denominator. So denominators must be computed against the full 58M-row set;
+  only the (tiny) flagged observation rows get snapshotted.
+
+DONE THIS SESSION:
+  - nj-ingest-fec load --cycle 2024 --files cn,cm  -> local (9,799 cand / 20,938 cmte)
+  - nj-ingest-fec load --cycle 2024 --files indiv -> local raw.fec_contribution
+    = 58,208,756 rows (indiv24.zip 4.2 GB compressed, ~15 GB expanded, single
+    streaming COPY ~12 min; tracked via pg_stat_progress_copy).
+  - derived.refresh_signal_donor_on_leie('2024') -> 24,271 observations
+    (entity_kind=donor; national scope; known-noisy v1 -- canonical LAST|FIRST
+    name match vs LEIE, loose on demographics per mig 059 header).
+
+IN PROGRESS / NEXT (resume here):
+  - derived.refresh_signal_candidate_funded_by_excluded_donors('2024') was still
+    running on local when the session was paused (~20 min; re-canonicalizes the
+    58M contribution names to roll flagged donors -> committees -> candidates,
+    CUME_DIST per office x state bucket, severity 5 CRITICAL). This is the
+    NJ-relevant signal (candidate entity_kind -> is_nj true for NJ candidates).
+    VERIFY it finished: SELECT signal_id,count(*) FROM
+    derived.fraud_signal_observation WHERE cycle='2024' AND signal_id IN
+    ('donor_on_leie','candidate_funded_by_excluded_donors') GROUP BY 1;
+  - THEN snapshot both signal slices local -> Neon (DELETE the two
+    (cycle='2024', signal_id) slices on Neon, then INSERT the local rows; 10
+    cols: cycle,entity_kind,entity_id,signal_id,raw_value,severity,peer_bucket,
+    peer_percentile,evidence_url,materialized_at). Consider a small reusable
+    loader (scripts/load_fec_donor_lane_snapshot.py) mirroring the leads one.
+  - VERIFY live on /risk: NJ scope should show candidate_funded_by_excluded_donors
+    firings; national scope should show donor_on_leie. Default cycle resolves to
+    MAX (2026) -- these are 2024, so user must select cycle=2024 to see them.
+    (Optional follow-up: also run cycle 2026 once mid-cycle itemized matters.)
+  - RECLAIM local disk if needed: raw.fec_contribution ~15 GB on nj_pg_local;
+    TRUNCATE after snapshot is safe (recompute by reloading indiv). Local box
+    had 385 GB free so no urgency.
+
+CONNECTION NOTES (local box): port 5433, db `nj`, user `postgres`, pw in the
+container env (docker inspect nj_pg_local). The indiv24.zip is cached under
+data/manual/fec/2024/ so re-load is COPY-only (no re-download).
+
+================================================================================
 SESSION 2026-06-10c -- "ok back to work" -> SERVE NATIONAL LEADS (Oracle-free)
 ================================================================================
 
