@@ -1,10 +1,22 @@
 import Link from "next/link";
 
+import { AffordablePriceRangeCard } from "@/components/AffordablePriceRange";
 import { FreshnessBadge } from "@/components/FreshnessBadge";
 import { Sparkline } from "@/components/Sparkline";
 import { TableControls } from "@/components/TableControls";
 import { isDbReachable } from "@/lib/db";
 import { fmtUsd } from "@/lib/format";
+import {
+  DEFAULT_PROFILE,
+  FILING_STATUS_LABEL,
+  type FilingStatus,
+  affordableHomePriceRange,
+  parseProfileFromSearch,
+  profileToSearchParams,
+  runPersonalizationEngine,
+  stretchMultiplierFromAssumptions,
+  type AffordablePriceRange,
+} from "@/lib/personalize";
 import {
   getPlatformFreshnessHeadline,
   type PlatformFreshnessHeadline,
@@ -41,6 +53,17 @@ interface HousingSearchParams {
   dir?: string;
   tier?: string;
   county?: string;
+  gross?: string;
+  filing?: string;
+  deps?: string;
+  kids?: string;
+  debt?: string;
+  year?: string;
+  down?: string;
+  term?: string;
+  dtif?: string;
+  dtib?: string;
+  rate?: string;
 }
 
 const SORT_OPTIONS = [
@@ -201,6 +224,46 @@ export default async function HousingPage({
         return null;
     }
   };
+  const submitted = typeof sp.gross === "string" && sp.gross.trim() !== "";
+  let priceRange: AffordablePriceRange | null = null;
+  let personalizeYear: number | null = null;
+  let personalizeQuery = "";
+  if (submitted && !err) {
+    const profile = parseProfileFromSearch({
+      gross: sp.gross,
+      filing: sp.filing,
+      deps: sp.deps,
+      kids: sp.kids,
+      debt: sp.debt,
+      year: sp.year,
+      down: sp.down,
+      term: sp.term,
+      dtif: sp.dtif,
+      dtib: sp.dtib,
+      rate: sp.rate,
+    });
+    try {
+      const result = await runPersonalizationEngine(profile);
+      const populated = result.counties.filter((c) => c.median_home_price != null);
+      priceRange = affordableHomePriceRange(
+        populated,
+        stretchMultiplierFromAssumptions(result.assumptions),
+      );
+      personalizeYear = result.resolved_year;
+      personalizeQuery = profileToSearchParams(profile);
+    } catch {
+      priceRange = {
+        dti_lo: null,
+        dti_hi: null,
+        post_tax_lo: null,
+        post_tax_hi: null,
+        stretch_hi: null,
+        n_counties: 0,
+      };
+      personalizeYear = profile.year;
+    }
+  }
+
   const visibleMunis = munis
     .filter((m) => (q ? m.muni_name.toLowerCase().includes(q) : true))
     .filter((m) => (countyFilter ? m.county_name === countyFilter : true))
@@ -304,7 +367,21 @@ export default async function HousingPage({
             )}
           </div>
 
-          <PersonalizeCTA />
+          <HousingPersonalize
+            view={view}
+            submitted={submitted}
+            range={priceRange}
+            year={personalizeYear}
+            fullResultsHref={
+              personalizeQuery ? `/personalize?${personalizeQuery}` : undefined
+            }
+            defaultGross={sp.gross}
+            defaultFiling={sp.filing}
+            defaultDeps={sp.deps}
+            defaultKids={sp.kids}
+            defaultDebt={sp.debt}
+            defaultYear={sp.year}
+          />
 
           <Methodology baseYear={baseYear} bands={bands} />
         </>
@@ -684,29 +761,148 @@ function signedUsd(n: number): string {
 /*  Lower-fold: personalize CTA + methodology                       */
 /* ---------------------------------------------------------------- */
 
-function PersonalizeCTA() {
+function HousingPersonalize({
+  view,
+  submitted,
+  range,
+  year,
+  fullResultsHref,
+  defaultGross,
+  defaultFiling,
+  defaultDeps,
+  defaultKids,
+  defaultDebt,
+  defaultYear,
+}: {
+  view: string;
+  submitted: boolean;
+  range: AffordablePriceRange | null;
+  year: number | null;
+  fullResultsHref?: string;
+  defaultGross?: string;
+  defaultFiling?: string;
+  defaultDeps?: string;
+  defaultKids?: string;
+  defaultDebt?: string;
+  defaultYear?: string;
+}) {
   return (
-    <section className="rounded-xl border border-rose-300 dark:border-rose-900 bg-rose-50 dark:bg-rose-950/30 p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-      <div>
-        <div className="text-xs uppercase tracking-wider text-rose-700 dark:text-rose-300">
-          Personalize
-        </div>
-        <h2 className="mt-1 text-lg font-semibold">
-          Run these numbers for your household.
-        </h2>
-        <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-300 max-w-2xl">
-          Same engine. Plug in your gross income, filing status, dependents,
-          and other monthly debt &mdash; we compute every NJ county verdict
-          (and every NJ town drill-down) for you.
-        </p>
-      </div>
-      <Link
-        href="/personalize"
-        className="inline-flex items-center justify-center gap-2 rounded-lg bg-rose-600 hover:bg-rose-500 px-5 py-2.5 text-sm font-semibold text-white shadow-sm shadow-rose-900/20 whitespace-nowrap"
+    <section className="space-y-4">
+      {submitted && range != null && year != null && (
+        <AffordablePriceRangeCard
+          range={range}
+          year={year}
+          fullResultsHref={fullResultsHref}
+        />
+      )}
+      <form
+        method="GET"
+        action="/housing"
+        className="rounded-xl border border-rose-300 dark:border-rose-900 bg-rose-50 dark:bg-rose-950/30 p-6 space-y-4"
       >
-        Open personalizer
-        <span aria-hidden>&rarr;</span>
-      </Link>
+        {view === "towns" && <input type="hidden" name="view" value="towns" />}
+        <div>
+          <div className="text-xs uppercase tracking-wider text-rose-700 dark:text-rose-300">
+            Personalize
+          </div>
+          <h2 className="mt-1 text-lg font-semibold">
+            What house can you afford?
+          </h2>
+          <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-300 max-w-2xl">
+            Same Fannie Mae DTI engine as the personalizer. Enter your
+            household and we return the NJ house-price band those numbers
+            support.
+          </p>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <label className="block text-xs text-zinc-600 dark:text-zinc-400">
+            Gross income ($)
+            <input
+              name="gross"
+              type="number"
+              min="0"
+              step="1000"
+              required
+              defaultValue={defaultGross ?? ""}
+              className="mt-1 block w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm text-zinc-900 dark:text-zinc-100"
+            />
+          </label>
+          <label className="block text-xs text-zinc-600 dark:text-zinc-400">
+            Filing
+            <select
+              name="filing"
+              defaultValue={defaultFiling ?? "single"}
+              className="mt-1 block w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm text-zinc-900 dark:text-zinc-100"
+            >
+              {(["single", "mfj", "mfs", "hoh", "qss"] as FilingStatus[]).map(
+                (s) => (
+                  <option key={s} value={s}>
+                    {FILING_STATUS_LABEL[s]}
+                  </option>
+                ),
+              )}
+            </select>
+          </label>
+          <label className="block text-xs text-zinc-600 dark:text-zinc-400">
+            Year
+            <input
+              name="year"
+              type="number"
+              min="2010"
+              max="2099"
+              defaultValue={defaultYear ?? String(DEFAULT_PROFILE.year)}
+              className="mt-1 block w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm text-zinc-900 dark:text-zinc-100"
+            />
+          </label>
+          <label className="block text-xs text-zinc-600 dark:text-zinc-400">
+            Dependents
+            <input
+              name="deps"
+              type="number"
+              min="0"
+              max="20"
+              defaultValue={defaultDeps ?? "0"}
+              className="mt-1 block w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm text-zinc-900 dark:text-zinc-100"
+            />
+          </label>
+          <label className="block text-xs text-zinc-600 dark:text-zinc-400">
+            CTC kids
+            <input
+              name="kids"
+              type="number"
+              min="0"
+              max="20"
+              defaultValue={defaultKids ?? "0"}
+              className="mt-1 block w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm text-zinc-900 dark:text-zinc-100"
+            />
+          </label>
+          <label className="block text-xs text-zinc-600 dark:text-zinc-400">
+            Other debt $/mo
+            <input
+              name="debt"
+              type="number"
+              min="0"
+              step="50"
+              defaultValue={defaultDebt ?? "0"}
+              className="mt-1 block w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm text-zinc-900 dark:text-zinc-100"
+            />
+          </label>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="submit"
+            className="inline-flex items-center justify-center rounded-lg bg-rose-600 hover:bg-rose-500 px-5 py-2.5 text-sm font-semibold text-white shadow-sm shadow-rose-900/20"
+          >
+            Show my price range
+          </button>
+          <Link
+            href="/personalize"
+            className="text-sm font-medium text-rose-800 dark:text-rose-200 underline underline-offset-4"
+          >
+            Full personalizer
+          </Link>
+        </div>
+      </form>
     </section>
   );
 }

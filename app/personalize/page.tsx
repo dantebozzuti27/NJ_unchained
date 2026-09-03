@@ -30,12 +30,14 @@
 
 import Link from "next/link";
 
+import { AffordablePriceRangeCard } from "@/components/AffordablePriceRange";
 import { isDbReachable } from "@/lib/db";
 import {
   CountyVerdictRow,
   DEFAULT_PROFILE,
   FILING_STATUS_LABEL,
   FilingStatus,
+  affordableHomePriceRange,
   fmtPct,
   fmtUsd,
   HouseholdProfile,
@@ -44,6 +46,7 @@ import {
   profileToSearchParams,
   runMuniVerdicts,
   runPersonalizationEngine,
+  stretchMultiplierFromAssumptions,
   verdictTone,
 } from "@/lib/personalize";
 
@@ -166,6 +169,10 @@ export default async function PersonalizePage({ searchParams }: PageProps) {
     (c) => c.verdict_dti === "out_of_reach",
   );
   const cheapestAffordable = affordableCounties[0] ?? null;
+  const priceRange = affordableHomePriceRange(
+    populatedCounties,
+    stretchMultiplierFromAssumptions(result.assumptions),
+  );
   const tightestOutOfReach =
     [...outOfReachCounties].sort(
       (a, b) =>
@@ -191,6 +198,13 @@ export default async function PersonalizePage({ searchParams }: PageProps) {
         <div className="rounded-md bg-amber-50 dark:bg-amber-950 p-3 text-xs text-amber-800 dark:text-amber-200">
           {result.year_fallback_reason}
         </div>
+      )}
+
+      {submitted && (
+        <AffordablePriceRangeCard
+          range={priceRange}
+          year={result.resolved_year}
+        />
       )}
 
       {populatedCounties.length > 0 && (

@@ -556,6 +556,67 @@ export function fmtPct(n: number | null | undefined, dp = 1): string {
   return `${(n * 100).toFixed(dp)}%`;
 }
 
+/**
+ * Household-level house-price band implied by the per-county engine.
+ *
+ * Max affordable price is county-specific because PITI includes that
+ * county's DCA equalized property-tax rate (mig 074
+ * `f_user_max_affordable_home_price_dti`). The range is min–max of
+ * those county results, not a second model. Stretch high uses the
+ * versioned `affordability_stretch_multiplier` from
+ * `ref.affordability_assumptions` (HUD outreach, seed 013) — pass
+ * null to omit it.
+ */
+export type AffordablePriceRange = {
+  dti_lo: number | null;
+  dti_hi: number | null;
+  post_tax_lo: number | null;
+  post_tax_hi: number | null;
+  stretch_hi: number | null;
+  n_counties: number;
+};
+
+export function affordableHomePriceRange(
+  counties: readonly CountyVerdictRow[],
+  stretchMultiplier: number | null,
+): AffordablePriceRange {
+  const dti = counties
+    .map((c) => c.max_affordable_dti)
+    .filter((n): n is number => n != null && Number.isFinite(n) && n > 0);
+  const postTax = counties
+    .map((c) => c.max_affordable_post_tax)
+    .filter((n): n is number => n != null && Number.isFinite(n) && n > 0);
+  const dti_lo = dti.length > 0 ? Math.min(...dti) : null;
+  const dti_hi = dti.length > 0 ? Math.max(...dti) : null;
+  const post_tax_lo = postTax.length > 0 ? Math.min(...postTax) : null;
+  const post_tax_hi = postTax.length > 0 ? Math.max(...postTax) : null;
+  const stretch_hi =
+    dti_hi != null &&
+    stretchMultiplier != null &&
+    Number.isFinite(stretchMultiplier) &&
+    stretchMultiplier > 0
+      ? dti_hi * stretchMultiplier
+      : null;
+  return {
+    dti_lo,
+    dti_hi,
+    post_tax_lo,
+    post_tax_hi,
+    stretch_hi,
+    n_counties: dti.length,
+  };
+}
+
+export function stretchMultiplierFromAssumptions(
+  assumptions: readonly AssumptionCitation[],
+): number | null {
+  const row = assumptions.find(
+    (a) => a.constant_id === "affordability_stretch_multiplier",
+  );
+  if (row == null || !Number.isFinite(row.value_numeric)) return null;
+  return row.value_numeric;
+}
+
 export function verdictTone(
   v: CountyVerdictRow["verdict_dti"] | MuniVerdictRow["verdict_dti"],
 ): { label: string; bg: string; fg: string } {
