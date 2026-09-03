@@ -78,6 +78,7 @@ EXPECTED_FORMULA_VERSIONS = frozenset({
     "3.6.0-fraud-provider-billing-growth-outlier-v1",  # provider_billing_growth_outlier
     "3.7.0-fraud-h1b-employer-lane-v1",  # four H-1B employer signals
     "3.8.0-fraud-h1b-attestation-enforcement-v1",  # attestation + WHD
+    "3.9.0-fraud-h1b-wage-floor-v1",  # at-PW floor + LCA willful
 })
 
 # All 20 fraud signals seeded across migrations 060-066, 092, 098, 101. Every
@@ -119,6 +120,8 @@ EXPECTED_SIGNAL_IDS: frozenset[str] = frozenset({
     "employer_level1_wage_share_outlier",
     "employer_secondary_entity_share_outlier",
     "employer_h1b_dependent_plus_anomaly",
+    "employer_wage_at_pw_floor_share_outlier",
+    "employer_lca_willful_attestation",
 })
 
 
@@ -599,6 +602,8 @@ class TestEvidenceViewTokenSubstitution:
             "employer_level1_wage_share_outlier":          "employer",
             "employer_secondary_entity_share_outlier":     "employer",
             "employer_h1b_dependent_plus_anomaly":         "employer",
+            "employer_wage_at_pw_floor_share_outlier":     "employer",
+            "employer_lca_willful_attestation":            "employer",
             # HHS-OIG-excluded provider x CMS Part B exact-NPI overlap
             # (mig 109 / seed 046). Also entity_kind=provider.
             "provider_excluded_billing_partb":             "provider",

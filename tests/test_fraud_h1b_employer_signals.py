@@ -58,6 +58,7 @@ def _insert_lca(
     h1b_dependent: str | None = None,
     secondary_entity: str | None = None,
     pw_wage_level: str | None = None,
+    willful_violator: str | None = None,
 ) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -68,7 +69,7 @@ def _insert_lca(
                 employer_state, worksite_state, total_workers,
                 wage_rate_of_pay_from, wage_unit_of_pay,
                 prevailing_wage, pw_unit_of_pay,
-                h1b_dependent, secondary_entity, pw_wage_level,
+                h1b_dependent, secondary_entity, pw_wage_level, willful_violator,
                 source_filename, source_sha256, source_schema_version
             ) VALUES (
                 2025, 1, %s, 1,
@@ -76,13 +77,13 @@ def _insert_lca(
                 'NJ', 'NJ', %s,
                 %s, 'Year',
                 %s, 'Year',
-                %s, %s, %s,
+                %s, %s, %s, %s,
                 'test.csv', repeat('a', 64), 'v5_2023'
             )
             """,
             (
                 case_number, status, employer, canonical, workers, wage, pw,
-                h1b_dependent, secondary_entity, pw_wage_level,
+                h1b_dependent, secondary_entity, pw_wage_level, willful_violator,
             ),
         )
     conn.commit()
@@ -384,3 +385,73 @@ def test_dependent_plus_anomaly_requires_corroboration(
     assert n == 1
     assert rows[0][0] == "dependent gap"
     assert int(rows[0][1]) == 1
+
+
+def test_wage_at_pw_floor_tail(h1b_db: psycopg.Connection) -> None:
+    for i in range(11):
+        for j in range(10):
+            _insert_lca(
+                h1b_db,
+                case_number=f"I-200-fl-{i}-{j}",
+                employer=f"ABOVE FLOOR {i} INC",
+                canonical=f"above floor {i}",
+                status="CERTIFIED",
+                wage=130_000,
+                pw=120_000,
+            )
+    for j in range(10):
+        _insert_lca(
+            h1b_db,
+            case_number=f"I-200-fl-heavy-{j}",
+            employer="FLOOR HEAVY INC",
+            canonical="floor heavy",
+            status="CERTIFIED",
+            wage=80_000,
+            pw=80_000,
+        )
+    with h1b_db.cursor() as cur:
+        cur.execute(
+            "SELECT derived.refresh_signal_employer_wage_at_pw_floor_share_outlier(%s)",
+            (_CYCLE,),
+        )
+        n = cur.fetchone()[0]
+        cur.execute(
+            """
+            SELECT entity_id FROM derived.fraud_signal_observation
+            WHERE signal_id = 'employer_wage_at_pw_floor_share_outlier'
+            """
+        )
+        ids = {r[0] for r in cur.fetchall()}
+    assert n == 1
+    assert ids == {"floor heavy"}
+
+
+def test_lca_willful_attestation_fires(h1b_db: psycopg.Connection) -> None:
+    _insert_lca(
+        h1b_db,
+        case_number="I-200-willful",
+        employer="WILLFUL ATTEST LLC",
+        canonical="willful attest",
+        status="CERTIFIED",
+        wage=120_000,
+        pw=120_000,
+        willful_violator="Y",
+    )
+    with h1b_db.cursor() as cur:
+        cur.execute(
+            "SELECT derived.refresh_signal_employer_lca_willful_attestation(%s)",
+            (_CYCLE,),
+        )
+        n = cur.fetchone()[0]
+        cur.execute(
+            """
+            SELECT entity_id, raw_value, severity
+            FROM derived.fraud_signal_observation
+            WHERE signal_id = 'employer_lca_willful_attestation'
+            """
+        )
+        obs = cur.fetchone()
+    assert n == 1
+    assert obs[0] == "willful attest"
+    assert int(obs[1]) == 1
+    assert obs[2] == 5

@@ -106,6 +106,8 @@ EXPECTED_SIGNALS: dict[str, tuple[int, str]] = {
     "employer_level1_wage_share_outlier": (3, "empirical_pctile"),
     "employer_secondary_entity_share_outlier": (3, "empirical_pctile"),
     "employer_h1b_dependent_plus_anomaly": (4, "statutory_cfr"),
+    "employer_wage_at_pw_floor_share_outlier": (3, "empirical_pctile"),
+    "employer_lca_willful_attestation": (5, "statutory_cfr"),
     # mig 111 / seed 049: Open Payments conflict-of-interest. Excluded
     # provider receiving an industry transfer of value (exact NPI match, but
     # not a federal payment) -> moderate lead, severity 3, oig_report basis.
@@ -156,6 +158,7 @@ EXPECTED_FORMULA_VERSIONS = {
     "3.6.0-fraud-provider-billing-growth-outlier-v1",  # provider_billing_growth_outlier
     "3.7.0-fraud-h1b-employer-lane-v1",
     "3.8.0-fraud-h1b-attestation-enforcement-v1",
+    "3.9.0-fraud-h1b-wage-floor-v1",
 }
 
 

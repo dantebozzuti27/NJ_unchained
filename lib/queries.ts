@@ -1701,6 +1701,8 @@ export const H1B_SIGNAL_IDS = [
   "employer_level1_wage_share_outlier",
   "employer_secondary_entity_share_outlier",
   "employer_h1b_dependent_plus_anomaly",
+  "employer_wage_at_pw_floor_share_outlier",
+  "employer_lca_willful_attestation",
 ] as const;
 
 export async function listH1bEmployerLeads(opts: {
@@ -1724,6 +1726,8 @@ export async function listH1bEmployerLeads(opts: {
             level1_wage_share::FLOAT8 AS level1_wage_share,
             secondary_entity_share::FLOAT8 AS secondary_entity_share,
             dependent_anomaly_count::FLOAT8 AS dependent_anomaly_count,
+            at_pw_floor_share::FLOAT8 AS at_pw_floor_share,
+            lca_willful_count::FLOAT8 AS lca_willful_count,
             preview_signal_id
           FROM derived.v_h1b_employer_leads
           WHERE cycle = ${opts.cycle}
@@ -1743,6 +1747,8 @@ export async function listH1bEmployerLeads(opts: {
             level1_wage_share::FLOAT8 AS level1_wage_share,
             secondary_entity_share::FLOAT8 AS secondary_entity_share,
             dependent_anomaly_count::FLOAT8 AS dependent_anomaly_count,
+            at_pw_floor_share::FLOAT8 AS at_pw_floor_share,
+            lca_willful_count::FLOAT8 AS lca_willful_count,
             preview_signal_id
           FROM derived.v_h1b_employer_leads
           ORDER BY cycle DESC, max_severity DESC, risk_score DESC NULLS LAST
@@ -1776,6 +1782,10 @@ export async function listH1bEmployerLeads(opts: {
         r.dependent_anomaly_count == null
           ? null
           : Number(r.dependent_anomaly_count),
+      at_pw_floor_share:
+        r.at_pw_floor_share == null ? null : Number(r.at_pw_floor_share),
+      lca_willful_count:
+        r.lca_willful_count == null ? null : Number(r.lca_willful_count),
       preview_signal_id:
         r.preview_signal_id == null ? null : String(r.preview_signal_id),
     }));

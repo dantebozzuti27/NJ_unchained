@@ -499,5 +499,7 @@ export interface H1bEmployerLead {
   level1_wage_share: number | null;
   secondary_entity_share: number | null;
   dependent_anomaly_count: number | null;
+  at_pw_floor_share: number | null;
+  lca_willful_count: number | null;
   preview_signal_id: string | null;
 }

@@ -230,6 +230,10 @@ def test_all_known_signals_seeded(fraud_db: psycopg.Connection) -> None:
             ("h1b_wage", Decimal("0.00")),
         "employer_h1b_dependent_plus_anomaly":
             ("h1b_cross_source", Decimal("1.00")),
+        "employer_wage_at_pw_floor_share_outlier":
+            ("h1b_wage", Decimal("0.00")),
+        "employer_lca_willful_attestation":
+            ("h1b_enforcement", Decimal("1.00")),
     }
 
     with fraud_db.cursor() as cur:

@@ -128,7 +128,7 @@ EXPECTED_SIGNAL_TO_REFRESHER = {
     "provider_billing_growth_outlier":
         "derived.refresh_signal_provider_billing_growth_outlier",
     # -------------------------------------------------------------
-    # TIER 11: H-1B employer visa-fraud leads (8 -- mig 121 + 122)
+    # TIER 11: H-1B employer visa-fraud leads (10 -- mig 121 + 122 + 124)
     # -------------------------------------------------------------
     "employer_below_prevailing_wage":
         "derived.refresh_signal_employer_below_prevailing_wage",
@@ -146,6 +146,10 @@ EXPECTED_SIGNAL_TO_REFRESHER = {
         "derived.refresh_signal_employer_secondary_entity_share_outlier",
     "employer_h1b_dependent_plus_anomaly":
         "derived.refresh_signal_employer_h1b_dependent_plus_anomaly",
+    "employer_wage_at_pw_floor_share_outlier":
+        "derived.refresh_signal_employer_wage_at_pw_floor_share_outlier",
+    "employer_lca_willful_attestation":
+        "derived.refresh_signal_employer_lca_willful_attestation",
 }
 
 

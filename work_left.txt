@@ -1,4 +1,30 @@
 ================================================================================
+SESSION 2026-09-02c -- H-1B WAGE-AT-FLOOR + LCA WILLFUL ATTESTATION (FRAUD-V1c) [SHIPPED]
+================================================================================
+
+RATIONALE (verifiable-data rule 7: continuation of FRAUD-V1, not in `idea`):
+
+Filing exactly at the prevailing wage is lawful (20 CFR 655.731 requires
+offered >= PW). CERTIFIED files still show a recognizable pattern: a
+large share of LCAs parked on the statutory floor. That is visible
+without new columns and without a Neon reload of FY2026. The lead is
+the peer-tail of that share, not "at-PW = fraud."
+
+A second predicate uses the ETA-9035 WILLFUL_VIOLATOR self-attestation
+bit (distinct from the WHD official list). Four FY2025 NJ rows are Y.
+
+NO MAGIC NUMBERS: floor equality is filed wage_from = filed PW in the
+same unit. Tail cutoff and min-cell live in ref.platform_constants.
+
+SHIPPED: mig 124, seed 055, formula 3.9.0-fraud-h1b-wage-floor-v1.
+Master refresher 36 -> 38. /h1b now 110 flagged employers.
+FY2025: 18 at-PW-floor tail, 2 LCA willful attestations (Coforge, Spino),
+dependent+anomaly 23 -> 34 (floor is now a corroborator). FY2026: 59
+at-PW-floor tail, 0 willful (attestation columns still NULL; Neon
+DiskFull blocked FY2026 reload). Floor tail pile-up at share=1.0 is
+honest CUME_DIST-with-ties, not a magic-number leak.
+
+================================================================================
 SESSION 2026-09-02b -- H-1B ATTESTATION + WHD ENFORCEMENT (FRAUD-V1b) [SHIPPED]
 ================================================================================
 

@@ -8,7 +8,7 @@ import type { H1bEmployerLead } from "@/lib/types";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const PROGRAM_VERSION = "3.8.0-fraud-h1b-attestation-enforcement-v1";
+const PROGRAM_VERSION = "3.9.0-fraud-h1b-wage-floor-v1";
 
 const SIGNAL_LABEL: Record<string, string> = {
   employer_below_prevailing_wage: "Below prevailing wage",
@@ -19,6 +19,8 @@ const SIGNAL_LABEL: Record<string, string> = {
   employer_level1_wage_share_outlier: "Level I wage-share tail",
   employer_secondary_entity_share_outlier: "Secondary-entity tail",
   employer_h1b_dependent_plus_anomaly: "H-1B-dependent + anomaly",
+  employer_wage_at_pw_floor_share_outlier: "At-prevailing-wage floor tail",
+  employer_lca_willful_attestation: "LCA willful attestation",
 };
 
 function fmtUsd(n: number | null): string {
@@ -155,6 +157,10 @@ function LeadRow({ lead }: { lead: H1bEmployerLead }) {
           {lead.dependent_anomaly_count != null && (
             <span>dep+{lead.dependent_anomaly_count}</span>
           )}
+          {lead.at_pw_floor_share != null && (
+            <span>floor {fmtPct(lead.at_pw_floor_share)}</span>
+          )}
+          {lead.lca_willful_count != null && <span>LCA willful</span>}
           <span className="text-zinc-900 dark:text-zinc-100">
             {lead.risk_score == null ? "—" : fmtScore(lead.risk_score)}
           </span>
@@ -209,6 +215,17 @@ function Methodology() {
           <strong>H-1B-dependent + anomaly</strong> — attested H-1B-dependent
           (20 CFR 655.736) plus a corroborating wage / volume / placement
           anomaly. Dependency is a statutory bucket, not itself a violation.
+        </li>
+        <li>
+          <strong>At-prevailing-wage floor tail</strong> — top 1% of
+          CERTIFIED LCA share filed at exactly the prevailing wage in the
+          same unit. Filing at PW is lawful (20 CFR 655.731 is ≥ PW); only
+          the peer tail is a lead.
+        </li>
+        <li>
+          <strong>LCA willful attestation</strong> — at least one CERTIFIED
+          LCA with ETA-9035 <code>WILLFUL_VIOLATOR=Y</code>. Distinct from
+          the WHD official willful-violator list.
         </li>
       </ul>
       <p>
