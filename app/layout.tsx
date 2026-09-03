@@ -54,6 +54,12 @@ export default function RootLayout({
                 Risk queue
               </Link>
               <Link
+                href="/h1b"
+                className="hover:underline underline-offset-4 font-semibold text-indigo-600 dark:text-indigo-400"
+              >
+                H-1B
+              </Link>
+              <Link
                 href="/fraud"
                 className="hover:underline underline-offset-4 font-semibold text-teal-600 dark:text-teal-400"
               >
@@ -76,7 +82,8 @@ export default function RootLayout({
         <footer className="border-t border-zinc-200 dark:border-zinc-800 mt-12 py-6 text-xs text-zinc-500 dark:text-zinc-400">
           <div className="mx-auto max-w-6xl px-4 flex flex-wrap gap-4 justify-between">
             <span>
-              Data: FEC, USAspending.gov, HHS-OIG LEIE, SAM.gov, ACS, FHFA.
+              Data: FEC, USAspending.gov, HHS-OIG LEIE, SAM.gov, ACS, FHFA,
+              DOL OFLC LCA, USCIS H-1B, DOL WHD H-1B.
             </span>
             <span>
               Risk score is a percentile-of-anomalousness, NOT a probability of fraud.

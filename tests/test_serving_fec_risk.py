@@ -91,6 +91,7 @@ def test_valid_entity_kinds_match_l1_check_constraint() -> None:
     expected = frozenset({
         "committee", "candidate", "treasurer", "address", "donor_cluster",
         "contractor", "donor", "nj_state_candidate", "provider",
+        "employer",
     })
     assert expected == VALID_ENTITY_KINDS
 

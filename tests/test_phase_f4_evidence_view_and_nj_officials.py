@@ -76,6 +76,8 @@ EXPECTED_FORMULA_VERSIONS = frozenset({
     "2.9.1-fraud-excluded-provider-received-open-payments-v1",  # excluded_provider_received_open_payments
     "3.3.0-fraud-antipsychotic-elderly-outlier-v1",  # antipsychotic_elderly_outlier
     "3.6.0-fraud-provider-billing-growth-outlier-v1",  # provider_billing_growth_outlier
+    "3.7.0-fraud-h1b-employer-lane-v1",  # four H-1B employer signals
+    "3.8.0-fraud-h1b-attestation-enforcement-v1",  # attestation + WHD
 })
 
 # All 20 fraud signals seeded across migrations 060-066, 092, 098, 101. Every
@@ -109,6 +111,14 @@ EXPECTED_SIGNAL_IDS: frozenset[str] = frozenset({
     "excluded_provider_received_open_payments",  # mig 111 / seed 049
     "antipsychotic_elderly_outlier",   # mig 115 / seed 051
     "provider_billing_growth_outlier",  # mig 118 / seed 052
+    "employer_below_prevailing_wage",
+    "employer_h1b_denial_rate_outlier",
+    "employer_lca_uscis_volume_gap",
+    "employer_certified_withdrawn_rate_outlier",
+    "employer_on_whd_willful_or_debarred",
+    "employer_level1_wage_share_outlier",
+    "employer_secondary_entity_share_outlier",
+    "employer_h1b_dependent_plus_anomaly",
 })
 
 
@@ -581,6 +591,14 @@ class TestEvidenceViewTokenSubstitution:
             # CMS Part B year-over-year billing-growth outlier (bust-out)
             # (mig 118 / seed 052). Also entity_kind=provider.
             "provider_billing_growth_outlier":             "provider",
+            "employer_below_prevailing_wage":              "employer",
+            "employer_h1b_denial_rate_outlier":            "employer",
+            "employer_lca_uscis_volume_gap":               "employer",
+            "employer_certified_withdrawn_rate_outlier":   "employer",
+            "employer_on_whd_willful_or_debarred":         "employer",
+            "employer_level1_wage_share_outlier":          "employer",
+            "employer_secondary_entity_share_outlier":     "employer",
+            "employer_h1b_dependent_plus_anomaly":         "employer",
             # HHS-OIG-excluded provider x CMS Part B exact-NPI overlap
             # (mig 109 / seed 046). Also entity_kind=provider.
             "provider_excluded_billing_partb":             "provider",
@@ -628,6 +646,8 @@ class TestEvidenceViewTokenSubstitution:
                 # fixture, so the provider_meta CTE finds no row and the
                 # view falls back to entity_id for display_name.
                 eid = "1234567893"
+            elif entity_kind == "employer":
+                eid = "acme software"
             else:
                 pytest.fail(f"unexpected entity_kind in seed: {entity_kind!r}")
 

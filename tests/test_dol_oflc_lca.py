@@ -315,11 +315,13 @@ _EXPECTED_DEST_COLUMNS: tuple[str, ...] = (
     "worksite_city", "worksite_state", "worksite_postal_code",
     "total_workers",
     "wage_rate_of_pay_from", "wage_rate_of_pay_to", "wage_unit_of_pay",
-    "prevailing_wage", "pw_unit_of_pay", "pw_source",
-    "soc_code", "job_title",
-    "source_filename", "source_sha256", "source_schema_version",
-    "data_quality",
-)
+        "prevailing_wage", "pw_unit_of_pay", "pw_source",
+        "soc_code", "job_title",
+        "employer_fein", "h1b_dependent", "willful_violator",
+        "secondary_entity", "secondary_entity_business_name", "pw_wage_level",
+        "source_filename", "source_sha256", "source_schema_version",
+        "data_quality",
+    )
 
 
 @pytest.mark.parametrize(
@@ -347,3 +349,15 @@ def test_stage_dataframe_provenance_columns_populated(lca_v5_2023_csv: Path) -> 
     assert (staged["source_schema_version"] == "v5_2023").all()
     assert (staged["data_quality"] == "measured").all()
     assert (staged["source_sha256"].str.len_chars() == 64).all()
+
+
+def test_v5_projects_attestation_fields(lca_v5_2023_csv: Path) -> None:
+    """FY2023+ files carry ETA-9035 attestation bits into the dest schema."""
+    staged = stage_dataframe(parse_lca_file(lca_v5_2023_csv))
+    infosys = staged.filter(staged["case_number"] == "I-205-24001-002")
+    assert infosys.height == 1
+    assert infosys["employer_fein"][0] == "119876543"
+    assert infosys["h1b_dependent"][0] == "Y"
+    assert infosys["willful_violator"][0] == "N"
+    assert infosys["secondary_entity"][0] == "Y"
+    assert infosys["pw_wage_level"][0] == "I"

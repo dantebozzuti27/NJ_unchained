@@ -214,6 +214,22 @@ def test_all_known_signals_seeded(fraud_db: psycopg.Connection) -> None:
         # a dynamics outlier independent of the single-year level outliers.
         "provider_billing_growth_outlier":
             ("cms_temporal", Decimal("0.00")),
+        "employer_below_prevailing_wage":
+            ("h1b_wage", Decimal("500.00")),
+        "employer_h1b_denial_rate_outlier":
+            ("h1b_adjudication", Decimal("0.00")),
+        "employer_lca_uscis_volume_gap":
+            ("h1b_cross_source", Decimal("0.00")),
+        "employer_certified_withdrawn_rate_outlier":
+            ("h1b_wage", Decimal("0.00")),
+        "employer_on_whd_willful_or_debarred":
+            ("h1b_enforcement", Decimal("1.00")),
+        "employer_level1_wage_share_outlier":
+            ("h1b_wage", Decimal("0.00")),
+        "employer_secondary_entity_share_outlier":
+            ("h1b_wage", Decimal("0.00")),
+        "employer_h1b_dependent_plus_anomaly":
+            ("h1b_cross_source", Decimal("1.00")),
     }
 
     with fraud_db.cursor() as cur:

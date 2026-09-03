@@ -92,6 +92,7 @@ VALID_ENTITY_KINDS: Final[frozenset[str]] = frozenset({
     "donor",
     "nj_state_candidate",
     "provider",
+    "employer",
 })
 
 #: Whitelisted sort columns for the queue endpoint. ``risk_score`` is the

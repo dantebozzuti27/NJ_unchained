@@ -98,6 +98,14 @@ EXPECTED_SIGNALS: dict[str, tuple[int, str]] = {
     # cms_temporal (mig 118 / seed 052): specialty-relative year-over-year
     # Medicare-billing growth outlier (bust-out). Severity 4; empirical_pctile.
     "provider_billing_growth_outlier": (4, "empirical_pctile"),
+    "employer_below_prevailing_wage": (5, "statutory_cfr"),
+    "employer_h1b_denial_rate_outlier": (4, "empirical_pctile"),
+    "employer_lca_uscis_volume_gap": (3, "empirical_pctile"),
+    "employer_certified_withdrawn_rate_outlier": (3, "empirical_pctile"),
+    "employer_on_whd_willful_or_debarred": (5, "statutory_cfr"),
+    "employer_level1_wage_share_outlier": (3, "empirical_pctile"),
+    "employer_secondary_entity_share_outlier": (3, "empirical_pctile"),
+    "employer_h1b_dependent_plus_anomaly": (4, "statutory_cfr"),
     # mig 111 / seed 049: Open Payments conflict-of-interest. Excluded
     # provider receiving an industry transfer of value (exact NPI match, but
     # not a federal payment) -> moderate lead, severity 3, oig_report basis.
@@ -146,6 +154,8 @@ EXPECTED_FORMULA_VERSIONS = {
     "2.9.1-fraud-excluded-provider-received-open-payments-v1",  # excluded_provider_received_open_payments
     "3.3.0-fraud-antipsychotic-elderly-outlier-v1",  # antipsychotic_elderly_outlier
     "3.6.0-fraud-provider-billing-growth-outlier-v1",  # provider_billing_growth_outlier
+    "3.7.0-fraud-h1b-employer-lane-v1",
+    "3.8.0-fraud-h1b-attestation-enforcement-v1",
 }
 
 

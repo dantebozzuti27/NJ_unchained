@@ -15,7 +15,8 @@ export type EntityKind =
   | "contractor"
   | "address"
   | "nj_state_candidate"
-  | "provider";
+  | "provider"
+  | "employer";
 
 export interface RiskRow {
   cycle: string;
@@ -479,4 +480,24 @@ export interface PlatformStatus {
   total_signals_fired: number;
   signal_count_by_family: Record<string, number>;
   vintage_iso: string | null;
+}
+
+/** One NJ H-1B employer lead for /h1b (derived.v_h1b_employer_leads). */
+export interface H1bEmployerLead {
+  cycle: string;
+  entity_id: string;
+  display_name: string | null;
+  is_nj: boolean;
+  risk_score: number | null;
+  n_signals: number;
+  max_severity: number;
+  below_pw_gap_usd: number | null;
+  denial_rate: number | null;
+  lca_uscis_gap_ratio: number | null;
+  certified_withdrawn_rate: number | null;
+  on_whd_list: number | null;
+  level1_wage_share: number | null;
+  secondary_entity_share: number | null;
+  dependent_anomaly_count: number | null;
+  preview_signal_id: string | null;
 }

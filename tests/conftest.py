@@ -163,16 +163,21 @@ def lca_v5_2023_csv(tmp_path: Path) -> Path:
         "FULL_TIME_POSITION,BEGIN_DATE,END_DATE,"
         "WORKSITE_CITY,WORKSITE_STATE,WORKSITE_POSTAL_CODE,TOTAL_WORKER_POSITIONS,"
         "WAGE_RATE_OF_PAY_FROM,WAGE_RATE_OF_PAY_TO,WAGE_UNIT_OF_PAY,"
-        "PREVAILING_WAGE,PW_UNIT_OF_PAY\n"
+        "PREVAILING_WAGE,PW_UNIT_OF_PAY,"
+        "EMPLOYER_FEIN,H-1B_DEPENDENT,WILLFUL_VIOLATOR,"
+        "SECONDARY_ENTITY,PW_WAGE_LEVEL\n"
         "I-205-24001-001,CERTIFIED,H-1B,Tata Consultancy Services LLC,541512,Y,"
         '2024-07-15 00:00:00,2027-07-14 00:00:00,'
-        'Iselin,NJ,8830,1,"$95,000.00","$100,000.00",Year,"$92,000.00",Year\n'
+        'Iselin,NJ,8830,1,"$95,000.00","$100,000.00",Year,"$92,000.00",Year,'
+        "22-1234567,N,N,N,II\n"
         "I-205-24001-002,CERTIFIED,H-1B,Infosys LLC,541512,Y,"
         "2024-08-01 00:00:00,2027-07-31 00:00:00,"
-        "Newark,NJ,07102,2,72.50,80.00,Hour,70.00,Hour\n"
+        "Newark,NJ,07102,2,72.50,80.00,Hour,70.00,Hour,"
+        "11-9876543,Y,N,Y,I\n"
         "I-205-24001-003,WITHDRAWN,E-3 Australian,Macquarie Bank Limited,522110,Y,"
         "2024-09-01 00:00:00,2026-08-31 00:00:00,"
-        "Jersey City,NJ,07302,1,180000,200000,Year,170000,Year\n",
+        "Jersey City,NJ,07302,1,180000,200000,Year,170000,Year,"
+        "98-0000001,N,N,N,IV\n",
         encoding="utf-8",
     )
     return path

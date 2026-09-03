@@ -165,6 +165,11 @@ export default function AboutPage() {
         <li>SAM.gov Exclusions extract</li>
         <li>FHFA HPI county series</li>
         <li>ACS income / housing-burden microdata (PUMS)</li>
+        <li>
+          DOL OFLC LCA disclosures (H-1B statutory wages), USCIS H-1B
+          Employer Data Hub (first-decision approvals/denials), and DOL
+          WHD H-1B debarment / willful-violator lists
+        </li>
       </ul>
     </article>
   );

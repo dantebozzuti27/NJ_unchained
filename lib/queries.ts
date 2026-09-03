@@ -27,6 +27,7 @@ import type {
   EvidenceCard,
   HealthcareSignalCatalogEntry,
   HealthcareSubstrateStatus,
+  H1bEmployerLead,
   HighValueLead,
   HighValueLeadsSummary,
   LeadsSnapshotMeta,
@@ -66,6 +67,7 @@ const VALID_KINDS: ReadonlySet<EntityKind> = new Set([
   "address",
   "nj_state_candidate",
   "provider",
+  "employer",
 ]);
 
 export function isValidKind(k: string): k is EntityKind {
@@ -940,6 +942,60 @@ export async function getEntityHeader(opts: {
     };
   }
 
+  if (kind === "employer") {
+    const rows = (await sql`
+      SELECT
+        ${cycle}::CHAR(4) AS cycle,
+        employer_canonical_name AS entity_id,
+        employer_name AS display_name,
+        TRUE AS is_nj
+      FROM derived.v_lca_nj_h1b
+      WHERE employer_canonical_name = ${id}
+        AND fiscal_year::text = ${cycle}
+      LIMIT 1
+    `) as Record<string, unknown>[];
+    if (rows.length === 0) {
+      const uscis = (await sql`
+        SELECT
+          ${cycle}::CHAR(4) AS cycle,
+          employer_canonical_name AS entity_id,
+          employer_name AS display_name,
+          (UPPER(TRIM(petitioner_state)) = 'NJ') AS is_nj
+        FROM raw.uscis_h1b_employer
+        WHERE employer_canonical_name = ${id}
+          AND fiscal_year::text = ${cycle}
+        LIMIT 1
+      `) as Record<string, unknown>[];
+      if (uscis.length === 0) return null;
+      const u = uscis[0];
+      return {
+        cycle: String(u.cycle),
+        entity_kind: "employer",
+        entity_id: String(u.entity_id),
+        display_name: u.display_name == null ? null : String(u.display_name),
+        is_nj: u.is_nj === true,
+        office_code: "H-1B petitioner",
+        office_state: u.is_nj === true ? "NJ" : null,
+        office_district: null,
+        office_party: null,
+        office_incumbent_status: null,
+      };
+    }
+    const r = rows[0];
+    return {
+      cycle: String(r.cycle),
+      entity_kind: "employer",
+      entity_id: String(r.entity_id),
+      display_name: r.display_name == null ? null : String(r.display_name),
+      is_nj: true,
+      office_code: "H-1B employer",
+      office_state: "NJ",
+      office_district: null,
+      office_party: null,
+      office_incumbent_status: null,
+    };
+  }
+
   return null;
 }
 
@@ -1634,4 +1690,123 @@ export async function getSignalValidation(): Promise<SignalValidationRow[]> {
     precision_wilson_lo95:
       r.precision_wilson_lo95 == null ? null : Number(r.precision_wilson_lo95),
   }));
+}
+
+export const H1B_SIGNAL_IDS = [
+  "employer_below_prevailing_wage",
+  "employer_h1b_denial_rate_outlier",
+  "employer_lca_uscis_volume_gap",
+  "employer_certified_withdrawn_rate_outlier",
+  "employer_on_whd_willful_or_debarred",
+  "employer_level1_wage_share_outlier",
+  "employer_secondary_entity_share_outlier",
+  "employer_h1b_dependent_plus_anomaly",
+] as const;
+
+export async function listH1bEmployerLeads(opts: {
+  cycle?: string;
+  limit?: number;
+}): Promise<H1bEmployerLead[]> {
+  const sql = getSql();
+  const limit = opts.limit ?? 80;
+  try {
+    const rows = opts.cycle
+      ? ((await sql`
+          SELECT
+            cycle, entity_id, display_name, is_nj,
+            risk_score::FLOAT8 AS risk_score,
+            n_signals, max_severity,
+            below_pw_gap_usd::FLOAT8 AS below_pw_gap_usd,
+            denial_rate::FLOAT8 AS denial_rate,
+            lca_uscis_gap_ratio::FLOAT8 AS lca_uscis_gap_ratio,
+            certified_withdrawn_rate::FLOAT8 AS certified_withdrawn_rate,
+            on_whd_list::FLOAT8 AS on_whd_list,
+            level1_wage_share::FLOAT8 AS level1_wage_share,
+            secondary_entity_share::FLOAT8 AS secondary_entity_share,
+            dependent_anomaly_count::FLOAT8 AS dependent_anomaly_count,
+            preview_signal_id
+          FROM derived.v_h1b_employer_leads
+          WHERE cycle = ${opts.cycle}
+          ORDER BY max_severity DESC, risk_score DESC NULLS LAST, n_signals DESC
+          LIMIT ${limit}
+        `) as Record<string, unknown>[])
+      : ((await sql`
+          SELECT
+            cycle, entity_id, display_name, is_nj,
+            risk_score::FLOAT8 AS risk_score,
+            n_signals, max_severity,
+            below_pw_gap_usd::FLOAT8 AS below_pw_gap_usd,
+            denial_rate::FLOAT8 AS denial_rate,
+            lca_uscis_gap_ratio::FLOAT8 AS lca_uscis_gap_ratio,
+            certified_withdrawn_rate::FLOAT8 AS certified_withdrawn_rate,
+            on_whd_list::FLOAT8 AS on_whd_list,
+            level1_wage_share::FLOAT8 AS level1_wage_share,
+            secondary_entity_share::FLOAT8 AS secondary_entity_share,
+            dependent_anomaly_count::FLOAT8 AS dependent_anomaly_count,
+            preview_signal_id
+          FROM derived.v_h1b_employer_leads
+          ORDER BY cycle DESC, max_severity DESC, risk_score DESC NULLS LAST
+          LIMIT ${limit}
+        `) as Record<string, unknown>[]);
+    return rows.map((r) => ({
+      cycle: String(r.cycle),
+      entity_id: String(r.entity_id),
+      display_name: r.display_name == null ? null : String(r.display_name),
+      is_nj: r.is_nj === true,
+      risk_score: r.risk_score == null ? null : Number(r.risk_score),
+      n_signals: Number(r.n_signals ?? 0),
+      max_severity: Number(r.max_severity ?? 0),
+      below_pw_gap_usd:
+        r.below_pw_gap_usd == null ? null : Number(r.below_pw_gap_usd),
+      denial_rate: r.denial_rate == null ? null : Number(r.denial_rate),
+      lca_uscis_gap_ratio:
+        r.lca_uscis_gap_ratio == null ? null : Number(r.lca_uscis_gap_ratio),
+      certified_withdrawn_rate:
+        r.certified_withdrawn_rate == null
+          ? null
+          : Number(r.certified_withdrawn_rate),
+      on_whd_list: r.on_whd_list == null ? null : Number(r.on_whd_list),
+      level1_wage_share:
+        r.level1_wage_share == null ? null : Number(r.level1_wage_share),
+      secondary_entity_share:
+        r.secondary_entity_share == null
+          ? null
+          : Number(r.secondary_entity_share),
+      dependent_anomaly_count:
+        r.dependent_anomaly_count == null
+          ? null
+          : Number(r.dependent_anomaly_count),
+      preview_signal_id:
+        r.preview_signal_id == null ? null : String(r.preview_signal_id),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export async function getH1bLaneSummary(): Promise<{
+  n_employers: number;
+  n_below_pw: number;
+  latest_cycle: string | null;
+}> {
+  const sql = getSql();
+  try {
+    const rows = (await sql`
+      SELECT
+        COUNT(DISTINCT entity_id)::INT AS n_employers,
+        COUNT(*) FILTER (
+          WHERE below_pw_gap_usd IS NOT NULL
+        )::INT AS n_below_pw,
+        MAX(cycle) AS latest_cycle
+      FROM derived.v_h1b_employer_leads
+    `) as Record<string, unknown>[];
+    const r = rows[0] ?? {};
+    return {
+      n_employers: Number(r.n_employers ?? 0),
+      n_below_pw: Number(r.n_below_pw ?? 0),
+      latest_cycle: r.latest_cycle == null ? null : String(r.latest_cycle),
+    };
+  } catch {
+    return { n_employers: 0, n_below_pw: 0, latest_cycle: null };
+  }
 }

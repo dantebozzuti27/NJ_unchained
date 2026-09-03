@@ -204,6 +204,25 @@ _BASE_V2PLUS: Final[dict[str, str]] = {
     "pw_source": "pw_source_year",
     "soc_code": "soc_code",
     "job_title": "job_title",
+    # ETA-9035 attestation bits (v4/v5 always; earlier vintages often
+    # absent and then staged as NULL). Source header H-1B_DEPENDENT
+    # canonicalizes to h_1b_dependent.
+    "employer_fein": "employer_fein",
+    "h1b_dependent": "h_1b_dependent",
+    "willful_violator": "willful_violator",
+    "secondary_entity": "secondary_entity",
+    "secondary_entity_business_name": "secondary_entity_business_name",
+    "pw_wage_level": "pw_wage_level",
+}
+
+# Dest column -> extra canonicalized source names if the primary mapping
+# misses a vintage that used a shorter header (FEIN, H1B_DEPENDENT, ...).
+_SRC_ALIASES: Final[dict[str, tuple[str, ...]]] = {
+    "employer_fein": ("fein", "employer_tax_id"),
+    "h1b_dependent": ("h1b_dependent", "h1_b_dependent"),
+    "willful_violator": ("willful_violator_yn",),
+    "secondary_entity": ("secondary_entity_yn",),
+    "pw_wage_level": ("pw_level", "wage_level"),
 }
 
 COLUMN_MAPPINGS: Final[dict[str, dict[str, str]]] = {
@@ -343,6 +362,49 @@ def _normalize_wage_unit(raw: str | None) -> str | None:
     return _WAGE_UNIT_NORMALIZER.get(raw.strip().lower())
 
 
+def _normalize_yn(raw: str | None) -> str | None:
+    """Map Yes/No / Y/N attestation flags to the CHECK-constrained {Y, N}."""
+    if raw is None:
+        return None
+    key = raw.strip().lower()
+    if key in {"y", "yes", "true", "1"}:
+        return "Y"
+    if key in {"n", "no", "false", "0"}:
+        return "N"
+    return None
+
+
+def _normalize_pw_level(raw: str | None) -> str | None:
+    """Map OFLC PW_WAGE_LEVEL variants to {I, II, III, IV}."""
+    if raw is None:
+        return None
+    key = raw.strip().upper().replace("LEVEL", "").strip()
+    return {
+        "I": "I", "1": "I",
+        "II": "II", "2": "II",
+        "III": "III", "3": "III",
+        "IV": "IV", "4": "IV",
+    }.get(key)
+
+
+def _normalize_fein(raw: str | None) -> str | None:
+    """Keep EIN digits only; drop dashes/spaces. None if no digits."""
+    if raw is None:
+        return None
+    digits = "".join(c for c in raw if c.isdigit())
+    return digits or None
+
+
+def _source_column(df: pl.DataFrame, dest: str, primary: str) -> str | None:
+    """Return the first matching source column for *dest*, honoring aliases."""
+    if primary in df.columns:
+        return primary
+    for alias in _SRC_ALIASES.get(dest, ()):
+        if alias in df.columns:
+            return alias
+    return None
+
+
 # ============================================================================
 # Filename-based fiscal-year/quarter extraction
 # ============================================================================
@@ -433,7 +495,11 @@ def _project_v3_2018(df: pl.DataFrame) -> pl.DataFrame:
     (a sanity check; the source has never legally produced one).
     """
     case_mapping = COLUMN_MAPPINGS["v3_2018"]
-    case_cols = {dst: df[src] for dst, src in case_mapping.items() if src in df.columns}
+    case_cols = {}
+    for dst, src in case_mapping.items():
+        resolved = _source_column(df, dst, src)
+        if resolved is not None:
+            case_cols[dst] = df[resolved]
 
     frames: list[pl.DataFrame] = []
     for i in range(1, MAX_WORKSITES + 1):
@@ -470,8 +536,9 @@ def _project_simple(df: pl.DataFrame, version: str) -> pl.DataFrame:
     mapping = COLUMN_MAPPINGS[version]
     out_cols = {}
     for dst, src in mapping.items():
-        if src in df.columns:
-            out_cols[dst] = df[src]
+        resolved = _source_column(df, dst, src)
+        if resolved is not None:
+            out_cols[dst] = df[resolved]
         else:
             # Optional column for this vintage; emit nulls so the schema is
             # uniform across vintages.
@@ -636,6 +703,25 @@ def _coerce_types(df: pl.DataFrame) -> pl.DataFrame:
             .map_elements(canonical_employer_name, return_dtype=pl.Utf8)
             .alias("employer_canonical_name")
         )
+    for yn_col in ("h1b_dependent", "willful_violator", "secondary_entity"):
+        if yn_col in df.columns:
+            transforms.append(
+                pl.col(yn_col)
+                .map_elements(_normalize_yn, return_dtype=pl.Utf8)
+                .alias(yn_col)
+            )
+    if "pw_wage_level" in df.columns:
+        transforms.append(
+            pl.col("pw_wage_level")
+            .map_elements(_normalize_pw_level, return_dtype=pl.Utf8)
+            .alias("pw_wage_level")
+        )
+    if "employer_fein" in df.columns:
+        transforms.append(
+            pl.col("employer_fein")
+            .map_elements(_normalize_fein, return_dtype=pl.Utf8)
+            .alias("employer_fein")
+        )
 
     return df.with_columns(transforms)
 
@@ -734,6 +820,8 @@ def stage_dataframe(parse: ParseResult) -> pl.DataFrame:
         "wage_rate_of_pay_from", "wage_rate_of_pay_to", "wage_unit_of_pay",
         "prevailing_wage", "pw_unit_of_pay", "pw_source",
         "soc_code", "job_title",
+        "employer_fein", "h1b_dependent", "willful_violator",
+        "secondary_entity", "secondary_entity_business_name", "pw_wage_level",
         "source_filename", "source_sha256", "source_schema_version",
         "data_quality",
     )
@@ -829,6 +917,14 @@ DOL_LCA_URL_TEMPLATE: Final[str] = (
     "LCA_Disclosure_Data_FY{fy}_Q{q}.xlsx"
 )
 
+# DOL has published at least one quarterly file under a misspelled
+# filename (FY2026 Q3: LCA_Dislclosure_Data_...). Try the typo after
+# the canonical name 404s so fetch stays mechanical.
+DOL_LCA_URL_TEMPLATE_TYPO: Final[str] = (
+    "https://www.dol.gov/sites/dolgov/files/ETA/oflc/pdfs/"
+    "LCA_Dislclosure_Data_FY{fy}_Q{q}.xlsx"
+)
+
 
 def build_dol_lca_url(fiscal_year: int, fiscal_quarter: int) -> str:
     """Return the canonical DOL OFLC LCA download URL for a fiscal period.
@@ -845,6 +941,30 @@ def build_dol_lca_url(fiscal_year: int, fiscal_quarter: int) -> str:
     if fiscal_quarter not in (1, 2, 3, 4):
         raise IngestError(f"Invalid fiscal_quarter {fiscal_quarter!r}; expected 1..4.")
     return DOL_LCA_URL_TEMPLATE.format(fy=fiscal_year, q=fiscal_quarter)
+
+
+def build_dol_lca_url_candidates(fiscal_year: int, fiscal_quarter: int) -> tuple[str, ...]:
+    """Canonical URL first, then DOL typo / FY-subdir / Drupal-media variants.
+
+    FY2026 Q3 published under ``.../pdfs/FY26Q3/`` and a ``/media/`` alias;
+    the page label still uses the historic ``LCA_Dislclosure_`` typo.
+    """
+    fy = fiscal_year
+    q = fiscal_quarter
+    yy = fy % 100
+    return (
+        build_dol_lca_url(fy, q),
+        DOL_LCA_URL_TEMPLATE_TYPO.format(fy=fy, q=q),
+        (
+            "https://www.dol.gov/sites/dolgov/files/ETA/oflc/pdfs/"
+            f"FY{yy}Q{q}/LCA_Disclosure_Data_FY{fy}_Q{q}.xlsx"
+        ),
+        (
+            "https://www.dol.gov/sites/dolgov/files/ETA/oflc/pdfs/"
+            f"FY{yy}Q{q}/LCA_Dislclosure_Data_FY{fy}_Q{q}.xlsx"
+        ),
+        f"https://www.dol.gov/media/LCA_Disclosure_Data_FY{fy}_Q{q}.xlsx",
+    )
 
 
 def fetch_dol_lca_file(
@@ -876,34 +996,43 @@ def fetch_dol_lca_file(
     """
     import httpx
 
-    url = build_dol_lca_url(fiscal_year, fiscal_quarter)
+    urls = build_dol_lca_url_candidates(fiscal_year, fiscal_quarter)
     out_dir.mkdir(parents=True, exist_ok=True)
     dest = out_dir / f"LCA_Disclosure_Data_FY{fiscal_year}_Q{fiscal_quarter}.xlsx"
     if dest.exists() and not overwrite:
         log.info("Skipping fetch (already present): %s", dest)
         return dest
 
-    log.info("Fetching DOL LCA file: %s", url)
-    with (
-        httpx.Client(timeout=timeout_s, follow_redirects=True) as client,
-        client.stream("GET", url) as resp,
-    ):
-        if resp.status_code == 404:
-            raise IngestError(
-                f"DOL has no file at {url} (HTTP 404). "
-                "Either the fiscal period has not yet published, or the "
-                "URL convention has changed. Check the DOL OFLC "
-                "performance-data page."
-            )
-        resp.raise_for_status()
-        tmp = dest.with_suffix(dest.suffix + ".part")
-        with tmp.open("wb") as fh:
-            for chunk in resp.iter_bytes(chunk_size=1 << 20):  # 1 MiB
-                fh.write(chunk)
-        tmp.rename(dest)
-
-    log.info("Downloaded %s (%.1f MiB)", dest, dest.stat().st_size / (1 << 20))
-    return dest
+    last_404: str | None = None
+    headers = {
+        "User-Agent": (
+            "NJ-Unchained/1.0 (civic-integrity research; "
+            "+https://github.com/dantebozzuti27/NJ_unchained)"
+        )
+    }
+    with httpx.Client(timeout=timeout_s, follow_redirects=True, headers=headers) as client:
+        for url in urls:
+            log.info("Fetching DOL LCA file: %s", url)
+            with client.stream("GET", url) as resp:
+                if resp.status_code == 404:
+                    last_404 = url
+                    continue
+                resp.raise_for_status()
+                tmp = dest.with_suffix(dest.suffix + ".part")
+                with tmp.open("wb") as fh:
+                    for chunk in resp.iter_bytes(chunk_size=1 << 20):  # 1 MiB
+                        fh.write(chunk)
+                tmp.rename(dest)
+                log.info(
+                    "Downloaded %s (%.1f MiB)", dest, dest.stat().st_size / (1 << 20)
+                )
+                return dest
+    raise IngestError(
+        f"DOL has no file at {urls[0]} (HTTP 404"
+        + (f"; typo variant also 404: {last_404}" if last_404 else "")
+        + "). Either the fiscal period has not yet published, or the "
+        "URL convention has changed. Check the DOL OFLC performance-data page."
+    )
 
 
 @cli.command("fetch")
@@ -933,11 +1062,32 @@ def fetch_cmd(
               help="Postgres DSN (or set PG_DSN env var).")
 @click.option("--dry-run", is_flag=True, default=False,
               help="Parse and stage but do not COPY into Postgres.")
-def load_cmd(path: Path, dsn: str, dry_run: bool) -> None:
+@click.option(
+    "--nj-only",
+    is_flag=True,
+    default=False,
+    help="Keep only rows whose worksite_state or employer_state is NJ "
+    "(required for Neon free-tier storage).",
+)
+@click.option(
+    "--replace",
+    is_flag=True,
+    default=False,
+    help="DELETE the (fiscal_year, fiscal_quarter) slice before COPY "
+    "so a re-ingest with new attestation columns replaces the old rows.",
+)
+def load_cmd(path: Path, dsn: str, dry_run: bool, nj_only: bool, replace: bool) -> None:
     """Parse + stage + load an LCA file into ``raw.lca_disclosure``."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     result = parse_lca_file(path)
     staged = stage_dataframe(result)
+    if nj_only:
+        before = staged.height
+        staged = staged.filter(
+            (pl.col("worksite_state").str.to_uppercase() == "NJ")
+            | (pl.col("employer_state").str.to_uppercase() == "NJ")
+        )
+        log.info("NJ filter: %d -> %d rows", before, staged.height)
     log.info(
         "Staged %d rows from %s (schema %s, FY%dQ%d)",
         staged.height, path.name, result.schema_version,
@@ -950,6 +1100,19 @@ def load_cmd(path: Path, dsn: str, dry_run: bool) -> None:
     import psycopg
 
     with psycopg.connect(dsn) as conn:
+        if replace:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM raw.lca_disclosure "
+                    "WHERE fiscal_year = %s AND fiscal_quarter = %s",
+                    (result.fiscal_year, result.fiscal_quarter),
+                )
+                log.info(
+                    "Replaced FY%dQ%d: deleted %d existing rows",
+                    result.fiscal_year,
+                    result.fiscal_quarter,
+                    cur.rowcount,
+                )
         n = load_to_postgres(staged, conn)
         conn.commit()
         click.echo(f"Loaded {n} rows into raw.lca_disclosure.")

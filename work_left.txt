@@ -1,4 +1,82 @@
 ================================================================================
+SESSION 2026-09-02b -- H-1B ATTESTATION + WHD ENFORCEMENT (FRAUD-V1b) [SHIPPED]
+================================================================================
+
+RATIONALE (verifiable-data rule 7: continuation of FRAUD-V1, not in `idea`):
+
+Mig 121 shipped four H-1B leads. The public LCA file also carries the
+ETA-9035 attestation bits the first lane dropped (FEIN, H-1B_DEPENDENT,
+WILLFUL_VIOLATOR, SECONDARY_ENTITY, PW_WAGE_LEVEL), and DOL WHD publishes
+the official willful-violator and debarment lists (updated 2026-08-28).
+Those are the remaining public, keyless predicates. This session extends
+the LCA canonical schema, ingests the two WHD HTML lists, and adds four
+leads (official-list match, Level I share tail, third-party-placement
+share tail, H-1B-dependent + corroborating anomaly). Language stays
+"lead / anomaly / official list" -- never "visa fraud."
+
+SHIPPED: mig 122 + 123, seed 054, LCA attestation columns + --replace,
+WHD HTML ingester (5 debarment + 14 willful, vintage 2026-08-28),
+four new leads. Neon: FY2025 Q4 reloaded with attestation (13,991 NJ
+rows). FY2026 Q3 kept without attestation (47k rows; 512 MB cap blocked
+replace). WHD x NJ join is currently 0 (no NJ names on the official
+lists). /h1b shows 41 employers.
+
+NOT in this slice: PERM, FLAG OEWS independent PW recompute, USCIS
+FY2024-2026 Crosstab (no static CSV), WHD case-level enforcement
+(LOGIN.GOV key -- ask first).
+
+================================================================================
+SESSION 2026-09-02 -- H-1B VISA-FRAUD LANE (FRAUD-V1) [SHIPPED]
+================================================================================
+
+RATIONALE (verifiable-data rule 7: this metric is NOT in the original `idea`
+spec, so the justification is recorded HERE before the build):
+
+The original spec is a housing-affordability system. Pillar 2 (civic integrity)
+was added later as a public-spending / campaign-finance evidence engine. H-1B
+visa-fraud screening is a third civic-integrity slice, not a housing metric.
+
+WHY IT BELONGS ON THIS PLATFORM
+-------------------------------
+1. The substrate already holds DOL OFLC LCA disclosures (`raw.lca_disclosure`,
+   POP-2) — the only public, worksite-keyed statutory wage file for H-1B
+   employers — and already canonicalizes employer names. POP-3 (USCIS H-1B
+   Employer Data Hub) was explicitly scoped as the approval-side cross-check
+   and was never built. This session closes that gap and turns the pair into
+   *leads*, not a wage table.
+2. New Jersey is a high-volume H-1B worksite state (LCA FY2024 Q3 alone had
+   12,108 certified NJ H-1B cases). Employer-level anomalies (below-prevailing
+   wage, extreme denial rates, LCA-vs-approval volume gaps, certified-then-
+   withdrawn benches) are public-record patterns that DOL WHD, OFLC, and
+   USCIS already treat as investigation leads. Surfacing them is the same
+   job the Medicare/FEC lanes already do: rank cross-source evidence, do
+   not adjudicate guilt.
+3. Every detector is either (a) a statutory predicate (INA §212(n) / 20 CFR
+   655.731: offered wage must be ≥ prevailing wage) or (b) an empirical
+   peer-percentile tail with versioned constants in `ref.platform_constants`.
+   Scores remain "percentile of anomalousness", never P(fraud).
+
+HONEST SCOPE
+------------
+* NJ-scoped (worksite_state='NJ' OR employer_state='NJ' OR USCIS petitioner
+  state='NJ'). National LCA files are filtered at ingest so Neon stays
+  inside the 512 MB free cap.
+* Newest public vintages: DOL OFLC LCA through FY2026 Q3 (released ~2026-08-14);
+  USCIS Employer Data Hub through FY2026 Q3.
+* NOT built: individual-worker identity, SEVIS, I-129 microdata, wage-level
+  I/II abuse (PW_WAGE_LEVEL is not in the current LCA canonical schema),
+  OFLC debarment list (follow-on). Those need additional raw tables.
+* Language: "lead" / "anomaly" / "cross-source evidence". Never "this
+  employer committed visa fraud."
+
+SHIPPED THIS SESSION (see mig 121 + seed 053 + ingestion/uscis_h1b_employer.py):
+* entity_kind='employer'
+* raw.uscis_h1b_employer (POP-3)
+* four signals: employer_below_prevailing_wage, employer_h1b_denial_rate_outlier,
+  employer_lca_uscis_volume_gap, employer_certified_withdrawn_rate_outlier
+* /h1b public queue
+
+================================================================================
 SESSION 2026-06-17 -- "continue" -> FEC DONOR-DOLLAR LANE (FRAUD-F5c/F5d) [IN PROGRESS]
 ================================================================================
 
