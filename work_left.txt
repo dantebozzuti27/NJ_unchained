@@ -1,4 +1,54 @@
 ================================================================================
+SESSION 2026-09-10 -- "keep working" -> FEC DONOR-DOLLAR LANE SNAPSHOT (FRAUD-F5c/F5d) [SHIPPED]
+================================================================================
+
+Resumed the IN-PROGRESS lane from 2026-06-17. The local Docker substrate
+(nj_pg_local, :5433, db `nj`) container had been removed but the `nj_pg_data`
+volume survived, so the full 58,208,756-row raw.fec_contribution + both
+already-computed donor signals were intact (donor_on_leie=24,271;
+candidate_funded_by_excluded_donors=1,677 for cycle 2024). The expensive
+refresher that was mid-run when the session paused had in fact finished. Only
+the snapshot step remained.
+
+SHIPPED:
+  - scripts/load_fec_donor_lane_snapshot.py (nj-load-fec-donor-snapshot): a
+    reusable, provenance-preserving VERBATIM copy of fraud_signal_observation
+    slices (10 cols) from source->target, atomic DELETE+INSERT per
+    (cycle, signal_id). It does NOT recompute -- peer_percentile is stamped by
+    the local refresher against the full 58M-row denominator; recomputing on a
+    Neon subset would corrupt it. Includes a --min-free-mb pre-flight guard so a
+    slice cannot push Neon within N MB of the 512 MB free cap.
+  - Snapshotted candidate_funded_by_excluded_donors (cycle 2024, 1,677 rows,
+    <1 MB) into Neon. All 1,677 candidate ids name-resolve on Neon's national
+    fec_candidate; 56 are NJ. Top NJ: Kim 157,595 / Gottheimer 79,639 /
+    Altman 76,009 / Murphy 74,257 / Kean 56,957 / Menendez 40,942 / Booker /
+    Sherrill / Van Drew / Pallone. Neon 486 MB -> 487 MB.
+
+LIVE (no frontend deploy needed -- the snapshot flows straight through the
+already-deployed derived.v_entity_fraud_risk view + /risk pages):
+  https://nj-unchained.vercel.app/risk?cycle=2024&scope=nj  and
+  /risk/candidate/S4NJ00466?cycle=2024 (Kim) now render the signal + citation.
+  DEFAULT cycle resolves to MAX = 2026, so the user must select cycle=2024 to
+  see this lane (v_entity_fraud_risk cycles: 2023, 2024, 2025, 2026).
+  Honest percentile behavior: Kim/Gottheimer score high (top of their
+  office|state peer bucket); Booker/Menendez sit lower in the NJ-Senate bucket
+  by CUME_DIST, so ~0 -- correct, not a bug.
+
+STORAGE DECISION ($0 free-tier invariant, AGENTS.md): donor_on_leie (24,271
+national rows, ~11 MB on disk, known-noisy-v1) was NOT snapshotted. Neon had
+only ~26.8 MB free under the 512 MB cap; spending ~11 MB + index growth on a
+low-signal national-only feed is a poor trade and risks breaking live writes
+for the whole app. DEFERRED until Neon headroom exists (or the serving DB moves
+to the Oracle Always Free box). The loader accepts --signal donor_on_leie to
+finish that slice later; the pre-flight guard will refuse it while the cap is
+tight. This is the only deviation from the 2026-06-17 plan and is forced by a
+binding constraint.
+
+LOCAL BOX: nj_pg_local restarted against the persisted volume for the snapshot;
+raw.fec_contribution (~15 GB) remains loaded (385 GB free, no urgency to
+TRUNCATE). Container left in prior (stopped) state after the snapshot.
+
+================================================================================
 SESSION 2026-09-02c -- H-1B WAGE-AT-FLOOR + LCA WILLFUL ATTESTATION (FRAUD-V1c) [SHIPPED]
 ================================================================================
 

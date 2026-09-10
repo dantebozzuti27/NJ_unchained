@@ -46,6 +46,7 @@ serving = [
 [project.scripts]
 nj-migrate = "scripts.migrate:cli"
 nj-load-leads-snapshot = "scripts.load_national_leads_snapshot:cli"
+nj-load-fec-donor-snapshot = "scripts.load_fec_donor_lane_snapshot:cli"
 nj-ingest-lca = "ingestion.dol_oflc_lca:cli"
 nj-ingest-uscis-h1b = "ingestion.uscis_h1b_employer:cli"
 nj-ingest-whd-h1b = "ingestion.dol_whd_h1b_lists:cli"
